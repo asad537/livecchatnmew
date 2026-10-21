@@ -192,7 +192,7 @@ export default function VisitorDrawer({
           m.senderType === 'VISITOR'
             ? name
             : m.senderType === 'BOT'
-              ? 'Assistant'
+              ? 'Alex'
               : m.senderType === 'SYSTEM'
                 ? '—'
                 : m.sender?.name || 'Agent';
@@ -675,7 +675,7 @@ export default function VisitorDrawer({
                             {m.senderType === 'VISITOR'
                               ? name
                               : m.senderType === 'BOT'
-                                ? 'Assistant'
+                                ? 'Alex'
                                 : m.senderType === 'SYSTEM'
                                   ? ''
                                   : m.sender?.name || 'Agent'}

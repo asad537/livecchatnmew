@@ -201,7 +201,7 @@ async function buildTranscriptData(
         m.sender_type === 'VISITOR'
           ? visitorLabel
           : m.sender_type === 'BOT'
-            ? 'Assistant'
+            ? 'Alex'
             : m.sender_name || 'Agent';
       const body =
         m.kind === 'FILE'

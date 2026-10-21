@@ -16,6 +16,16 @@ export interface Config {
   aiApiKey: string | null;
   aiModel: string;
   aiGreeter: boolean;
+  /** Alex — self-hosted AI agent on the GPU pod (OpenAI-compatible vLLM + ComfyUI). */
+  alex: {
+    baseUrl: string | null;
+    apiKey: string | null;
+    model: string;
+    name: string;
+    fullAuto: boolean;
+    comfyUrl: string | null;
+    dataDir: string;
+  };
   autoTranslate: boolean;   // cross-language chat: translate visitor↔agent (uses the AI engine)
   smtpHost: string | null;
   smtpPort: number;
@@ -79,6 +89,15 @@ export function loadConfig(): Config {
     anthropicApiKey: env.ANTHROPIC_API_KEY || null,
     ...resolveAi(env),
     aiGreeter: env.AI_GREETER !== 'off',
+    alex: {
+      baseUrl: (env.ALEX_BASE_URL || '').replace(/\/+$/, '') || null,
+      apiKey: env.ALEX_API_KEY || null,
+      model: env.ALEX_MODEL || 'cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit',
+      name: env.ALEX_NAME || 'Alex',
+      fullAuto: env.ALEX_FULL_AUTO !== 'off',
+      comfyUrl: (env.ALEX_COMFY_URL || '').replace(/\/+$/, '') || null,
+      dataDir: env.ALEX_DATA_DIR || path.resolve(serverRoot, '../../alex'),
+    },
     // Auto-translate is on by default (turns itself off when no AI engine is
     // configured — see features/translate). Set AUTO_TRANSLATE=off to disable.
     autoTranslate: env.AUTO_TRANSLATE !== 'off',

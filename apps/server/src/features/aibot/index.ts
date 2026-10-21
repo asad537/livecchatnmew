@@ -13,6 +13,7 @@ import { EV, WIDGET_NAMESPACE, type ChatMessage } from '@livechat/shared';
 import type { AppDeps } from '../../core/deps.js';
 import { postMessage, type MessageRow } from '../../domain/messages.js';
 import { findRelevantKnowledge } from '../knowledge/index.js';
+import { alexTurn } from '../alex/index.js';
 
 interface ConvRow {
   id: string;
@@ -59,6 +60,11 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  */
 export function maybeBotReply(deps: AppDeps, conversationId: string): void {
   if (!deps.config.aiGreeter) return;
+  // Alex (self-hosted agent) takes over the whole bot flow when configured.
+  if (deps.config.alex.baseUrl) {
+    alexTurn(deps, conversationId);
+    return;
+  }
   if (inFlight.has(conversationId)) return;
   inFlight.add(conversationId);
 

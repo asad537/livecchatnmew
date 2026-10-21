@@ -5,3 +5,5 @@ storage/
 .env
 *.log
 .DS_Store
+*.backup-*
+alex/photos/

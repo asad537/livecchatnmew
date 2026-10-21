@@ -125,7 +125,7 @@ function toCallMeta(row: CallRow): CallMeta {
 }
 
 /** Display identity for AI-greeter messages (sender_type = 'BOT'). */
-export const BOT_SENDER = { name: 'Assistant', avatarColor: '#8b5cf6' };
+export const BOT_SENDER = { name: 'Assistant', avatarColor: '#16a34a' }; // name set from config.alex.name at boot
 
 // ─── Hydration ───────────────────────────────────────────────
 

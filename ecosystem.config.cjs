@@ -5,7 +5,7 @@
 module.exports = {
   apps: [
     {
-      name: 'livechat',
+      name: 'livechat2',
       cwd: './apps/server',
       script: 'npx',
       args: 'tsx src/index.ts',
