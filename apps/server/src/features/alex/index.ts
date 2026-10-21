@@ -521,10 +521,10 @@ async function styledReply(deps: AppDeps, botName: string, website: WebsiteRow, 
     if (prevBot?.content && norm(prevBot.content) === norm(text)) return null;
     // A question we already asked in this chat → the model is looping; keep the draft.
     const asked = new Set(
-      convo.filter((m) => m.role === 'assistant').flatMap((m) => ((m as { content: string | null }).content ?? '').split(/(?<=\?)/)).map((q) => norm(q)).filter((q) => q.length > 8),
+      convo.filter((m) => m.role === 'assistant').flatMap((m) => ((m as { content: string | null }).content ?? '').split(/(?<=[.!?])\s+|\n+/)).map((q) => norm(q)).filter((q) => q.length > 8),
     );
-    const newQs = text.split(/(?<=\?)/).map((q) => norm(q)).filter((q) => q.endsWith('') && q.length > 8 && /\?$/.test(q.trim() + '?') );
-    if (text.split(/(?<=\?)/).some((q) => /\?$/.test(q.trim()) && asked.has(norm(q)))) return null;
+    const newQs = text.split(/(?<=[.!?])\s+|\n+/).map((q) => norm(q)).filter((q) => q.endsWith('') && q.length > 8 && /\?$/.test(q.trim() + '?') );
+    if (text.split(/(?<=[.!?])\s+|\n+/).some((q) => /\?$/.test(q.trim()) && asked.has(norm(q)))) return null;
     void newQs;
     if (prevBot?.content && norm(text).length > 20 && norm(prevBot.content).includes(norm(text).slice(0, Math.min(60, norm(text).length)))) return null;
     return text;
@@ -677,9 +677,9 @@ export function alexTurn(deps: AppDeps, conversationId: string): void {
       // Drop any question sentence we already asked earlier in this chat (models love to loop on it).
       {
         const askedBefore = new Set(
-          convo.filter((m) => m.role === 'assistant').flatMap((m) => ((m as { content: string | null }).content ?? '').split(/(?<=\?)/)).map((q) => norm(q)).filter((q) => q.length > 8),
+          convo.filter((m) => m.role === 'assistant').flatMap((m) => ((m as { content: string | null }).content ?? '').split(/(?<=[.!?])\s+|\n+/)).map((q) => norm(q)).filter((q) => q.length > 8),
         );
-        const kept = reply.split(/(?<=\?)/).filter((part) => !(/\?\s*$/.test(part) && askedBefore.has(norm(part))));
+        const kept = reply.split(/(?<=[.!?])\s+|\n+/).filter((part) => !(/\?\s*$/.test(part) && askedBefore.has(norm(part))));
         const trimmed = kept.join('').replace(/\n{3,}/g, '\n\n').trim();
         if (trimmed.length >= 8 && trimmed !== reply) { alog(`dropped repeated question`); reply = trimmed; }
       }
