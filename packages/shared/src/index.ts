@@ -38,6 +38,7 @@ export interface WebsiteBranding {
   primaryColor: string;
   headerColor?: string | null; // widget header bar; NULL = primaryColor
   greeting: string;
+  aiAgent?: boolean; // an AI agent answers at once — no queue strip / queue notice
 }
 
 export interface Website extends WebsiteBranding {

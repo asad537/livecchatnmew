@@ -801,12 +801,15 @@ function attachWidgetNamespace(deps: AppDeps, ns: Namespace): void {
           // No auto-assignment: a new chat stays WAITING and UNASSIGNED, waiting
           // in the queue for an agent to pick it up manually (type-to-join). It
           // just gets the queue notice so the visitor knows someone will come.
-          await postMessage(deps, {
-            conversationId: conv.id,
-            senderType: 'SYSTEM',
-            kind: 'SYSTEM',
-            body: QUEUE_MESSAGE,
-          });
+          // With Alex active the AI answers within seconds — no queue notice.
+          if (!deps.config.alex.baseUrl) {
+            await postMessage(deps, {
+              conversationId: conv.id,
+              senderType: 'SYSTEM',
+              kind: 'SYSTEM',
+              body: QUEUE_MESSAGE,
+            });
+          }
           await emitInboxUpdate(deps, conv.id);
           await emitConversationStatus(deps, conv.id);
         }
@@ -1106,7 +1109,10 @@ async function onWidgetConnected(
   socket.emit(EV.WidgetReady, {
     visitorToken: ctx.visitorToken,
     visitor: visitorRow ? toVisitor(visitorRow, true, ctx.page) : null,
-    website: toBranding(ctx.websiteRow),
+    website: {
+      ...toBranding(ctx.websiteRow),
+      aiAgent: Boolean(deps.config.alex.baseUrl) && ctx.websiteRow.ai_enabled !== 0,
+    },
     conversation,
     messages,
     agent,

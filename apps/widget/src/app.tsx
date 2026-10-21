@@ -935,7 +935,7 @@ export function App({ server, widgetKey }: { server: string; widgetKey: string }
             <div class="lc-strip lc-strip-warn">
               <span class="lc-spin" /> Reconnecting…
             </div>
-          ) : status === 'WAITING' ? (
+          ) : status === 'WAITING' && !website?.aiAgent ? (
             <div class="lc-strip lc-strip-queue">
               <span class="lc-radar"><span /><span /><span /></span>
               <span>
