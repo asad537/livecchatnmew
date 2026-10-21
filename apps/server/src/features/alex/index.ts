@@ -481,13 +481,24 @@ const STYLE_SYSTEM =
   'Reply like a real human agent: short, warm, confident, one question at a time. Qualify the lead (box type, dimensions L x W x H, quantity, material, printing/finish, deadline), ' +
   'ask for name and email for the estimate, and tell them the team will send the exact quote. Never invent prices.';
 
+const SMALLTALK_RE = /^(hi+|hello+|hey+|hii+|salam|assalam.*|good (morning|afternoon|evening)|thanks?( you)?|thank u|ok(ay)?|k|yes|no|bye|hmm+|\?+)[.!\s]*$/i;
+const norm = (t: string): string => t.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+const hasQuestion = (t: string): boolean => /\?/.test(t);
+
 async function styledReply(deps: AppDeps, botName: string, website: WebsiteRow, convo: ChatMsg[], draft: string, faq: string): Promise<string | null> {
   const { styleBaseUrl, styleApiKey, styleModel } = deps.config.alex;
   if (!styleBaseUrl) return null;
+  // The trained voice model is a sales-script specialist: on greetings / one-word
+  // messages it jumps straight to "size and quantity?", so keep the draft there.
+  const lastUser = [...convo].reverse().find((m) => m.role === 'user') as { content: string } | undefined;
+  const lastUserText = (lastUser?.content ?? '').trim();
+  if (lastUserText.split(/\s+/).length <= 3 || SMALLTALK_RE.test(lastUserText)) return null;
+  if (/\[(sent image|customer sent a file)/i.test(draft) || /mockup|photo|picture|image/i.test(draft)) return null;
+  const prevBot = [...convo].reverse().find((m) => m.role === 'assistant') as { content: string | null } | undefined;
   const system =
     STYLE_SYSTEM.replace('{site}', website.name).replace('You are Alex,', `You are ${botName},`) +
     (faq ? `\n\nBusiness facts you may use:\n${faq.slice(0, 3000)}` : '') +
-    `\n\nSupervisor notes for this reply (keep every fact, question and promise in them; if they mention a photo or mockup that was sent, refer to it): ${draft}`;
+    `\n\nREWRITE TASK: the supervisor already wrote the reply below. Say exactly that, in your own natural agent wording. Keep every fact, question and promise; do NOT add new questions, do NOT ask something you already asked earlier in this chat, do not change the meaning.\nSupervisor reply: ${draft}`;
   try {
     const out = await chat(deps, [{ role: 'system', content: system }, ...convo.slice(-12)], false, {
       baseUrl: styleBaseUrl,
@@ -495,8 +506,18 @@ async function styledReply(deps: AppDeps, botName: string, website: WebsiteRow, 
       model: styleModel,
     });
     const text = out.content?.trim() ?? '';
-    // Guard rails: fall back to the draft on empty/odd output.
+    // Guard rails: fall back to the draft on empty/odd output, on an invented
+    // question, or on a near-repeat of the previous bot message.
     if (text.length < 2 || text.length > 900) return null;
+    if (hasQuestion(text) && !hasQuestion(draft)) return null;
+    // Too terse ("Noted!") when the supervisor actually said something.
+    if (text.length < 15 && draft.length >= 25) return null;
+    // Invented numbers (sizes, prices, days) that are in neither the draft nor the chat → keep the draft.
+    const known = norm(draft + ' ' + convo.map((m) => (m as { content: string | null }).content ?? '').join(' '));
+    const nums = norm(text).match(/\d+(?:\.\d+)?/g) ?? [];
+    if (nums.some((n) => !known.includes(n))) return null;
+    if (prevBot?.content && norm(prevBot.content) === norm(text)) return null;
+    if (prevBot?.content && norm(text).length > 20 && norm(prevBot.content).includes(norm(text).slice(0, Math.min(60, norm(text).length)))) return null;
     return text;
   } catch (err) {
     alog(`style model unavailable: ${(err as Error).message}`);
