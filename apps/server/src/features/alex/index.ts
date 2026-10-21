@@ -713,7 +713,10 @@ export function alexTurn(deps: AppDeps, conversationId: string): void {
       {
         const lastUserText = ((([...convo].reverse().find((m) => m.role === 'user') as { content?: unknown })?.content ?? '') as string | unknown[]);
         const lastText = typeof lastUserText === 'string' ? lastUserText : '';
-        const closing = /\b(thanks?|thank you|bye|goodbye|ok(ay)?|later|that's all|no thanks|great|cool)\b[.!\s]*$/i.test(lastText.trim()) || lastText.trim().length <= 3;
+        const closing =
+          /\b(thanks?|thank you|thx|bye|goodbye|that'?s (all|it)|no thanks|not now|maybe later|talk later|will get back|get back to you)\b/i.test(lastText) ||
+          /\b(have a (great|good|wonderful|nice) (day|one|evening|night)|goodbye|take care)\b/i.test(reply) ||
+          lastText.trim().length <= 3;
         const usedTool = messages.some((m) => m.role === 'tool');
         if (!hasQuestion(reply) && !closing && !usedTool) {
           try {
@@ -729,6 +732,15 @@ export function alexTurn(deps: AppDeps, conversationId: string): void {
             alog(`next-step failed: ${(err as Error).message}`);
           }
         }
+      }
+      // Alex cannot send emails: rewrite any such claim to what really happens.
+      {
+        const parts = sentencesOf(reply);
+        const fixed = parts.map((p) => (/\b(i('| wi)ll|i will|let me|i just|i have|i've|i am going to|i'm going to)\b[^.!?]*\b(send|sent|share|shoot|drop)[^.!?]*\b(e-?mail|inbox|test e-?mail)\b/i.test(p) || /\btest e-?mail\b/i.test(p))
+          ? 'Our team will email you the exact quote. '
+          : p);
+        const joined = fixed.join('').replace(/(Our team will email you the exact quote\. ?){2,}/g, 'Our team will email you the exact quote. ').trim();
+        if (joined !== reply) { alog('rewrote email claim'); reply = joined; }
       }
       // Remove hallucinated attachment pseudo-tags.
       reply = reply.replace(/\s*[\[(]\s*(sent|attached|attaching|sending|photo|image|mockup)[^\])]*(image|photo|mockup|file|jpg|png)[^\])]*[\])]\s*/gi, ' ').replace(/[ \t]{2,}/g, ' ').trim();
