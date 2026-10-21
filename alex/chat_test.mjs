@@ -5,7 +5,7 @@ let resolveBot = null;
 const t0 = Date.now();
 const log = (s) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s] ${s}`);
 socket.on('chat:message', ({ message: m }) => {
-  log(`${m.senderType} (${m.kind}): ${m.kind === 'FILE' ? `${m.body} ${m.file?.mime} ${m.file?.size}B ${m.file?.downloadUrl}` : m.body}`);
+  log(`${m.senderType} (${m.kind}): ${m.kind === "FILE" ? `${m.body} ${m.file?.mime} ${m.file?.size}B` : m.body.replace(/\n+/g, " ⏎ ")}`);
   if (m.senderType === 'BOT' && m.kind === 'TEXT' && resolveBot) resolveBot();
 });
 socket.on('chat:typing', (t) => log(`typing=${t.typing}`));
