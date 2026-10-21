@@ -486,6 +486,8 @@ const STYLE_SYSTEM =
 const SMALLTALK_RE = /^(hi+|hello+|hey+|hii+|salam|assalam.*|good (morning|afternoon|evening)|thanks?( you)?|thank u|ok(ay)?|k|yes|no|bye|hmm+|\?+)[.!\s]*$/i;
 const norm = (t: string): string => t.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
 const hasQuestion = (t: string): boolean => /\?/.test(t);
+/** Sentences with their trailing whitespace kept, so joining them back preserves spacing. */
+const sentencesOf = (t: string): string[] => t.match(/[^.!?\n]+[.!?]*[\s\n]*/g) ?? (t ? [t] : []);
 
 async function styledReply(deps: AppDeps, botName: string, website: WebsiteRow, convo: ChatMsg[], draft: string, faq: string): Promise<string | null> {
   const { styleBaseUrl, styleApiKey, styleModel } = deps.config.alex;
@@ -521,10 +523,10 @@ async function styledReply(deps: AppDeps, botName: string, website: WebsiteRow, 
     if (prevBot?.content && norm(prevBot.content) === norm(text)) return null;
     // A question we already asked in this chat → the model is looping; keep the draft.
     const asked = new Set(
-      convo.filter((m) => m.role === 'assistant').flatMap((m) => ((m as { content: string | null }).content ?? '').split(/(?<=[.!?])\s+|\n+/)).map((q) => norm(q)).filter((q) => q.length > 8),
+      convo.filter((m) => m.role === 'assistant').flatMap((m) => sentencesOf((m as { content: string | null }).content ?? '')).map((q) => norm(q)).filter((q) => q.length > 8),
     );
-    const newQs = text.split(/(?<=[.!?])\s+|\n+/).map((q) => norm(q)).filter((q) => q.endsWith('') && q.length > 8 && /\?$/.test(q.trim() + '?') );
-    if (text.split(/(?<=[.!?])\s+|\n+/).some((q) => /\?$/.test(q.trim()) && asked.has(norm(q)))) return null;
+    const newQs = sentencesOf(text).map((q) => norm(q)).filter((q) => q.endsWith('') && q.length > 8 && /\?$/.test(q.trim() + '?') );
+    if (sentencesOf(text).some((q) => /\?$/.test(q.trim()) && asked.has(norm(q)))) return null;
     void newQs;
     if (prevBot?.content && norm(text).length > 20 && norm(prevBot.content).includes(norm(text).slice(0, Math.min(60, norm(text).length)))) return null;
     return text;
@@ -677,11 +679,11 @@ export function alexTurn(deps: AppDeps, conversationId: string): void {
       // Drop any question sentence we already asked earlier in this chat (models love to loop on it).
       {
         const askedBefore = new Set(
-          convo.filter((m) => m.role === 'assistant').flatMap((m) => ((m as { content: string | null }).content ?? '').split(/(?<=[.!?])\s+|\n+/)).map((q) => norm(q)).filter((q) => q.length > 8),
+          convo.filter((m) => m.role === 'assistant').flatMap((m) => sentencesOf((m as { content: string | null }).content ?? '')).map((q) => norm(q)).filter((q) => q.length > 8),
         );
-        const kept = reply.split(/(?<=[.!?])\s+|\n+/).filter((part) => !(/\?\s*$/.test(part) && askedBefore.has(norm(part))));
+        const kept = sentencesOf(reply).filter((part) => !(/\?\s*$/.test(part) && askedBefore.has(norm(part))));
         const trimmed = kept.join('').replace(/\n{3,}/g, '\n\n').trim();
-        if (trimmed.length >= 8 && trimmed !== reply) { alog(`dropped repeated question`); reply = trimmed; }
+        if (trimmed.length >= 8 && kept.length < sentencesOf(reply).length) { alog(`dropped repeated question`); reply = trimmed; }
       }
       if (process.env.ALEX_STYLE_MODE === 'post') {
         const styled = await styledReply(deps, botSenderFor(conversationId).name, website, convo, reply, faqFor(loadPersona(deps).faq, website.name));
