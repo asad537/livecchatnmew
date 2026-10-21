@@ -620,6 +620,7 @@ export function App({ server, widgetKey }: { server: string; widgetKey: string }
   };
 
   const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // ── Info mini-form ─────────────────────────────────────────
   const submitInfo = (name: string, email: string, phone: string) => {
@@ -1017,16 +1018,18 @@ export function App({ server, widgetKey }: { server: string; widgetKey: string }
                 class="lc-attach"
                 title={conversation ? 'Attach a file' : 'Send a message first to attach files'}
                 disabled={!conversation || uploading || !connected}
-                onClick={() => {
-                  const picker = document.createElement('input');
-                  picker.type = 'file';
-                  picker.multiple = true;
-                  picker.onchange = (ev) => void onPickFile(ev);
-                  picker.click();
-                }}
+                onClick={() => fileInputRef.current?.click()}
               >
                 {uploading ? <span class="lc-spin" /> : <IconClip />}
               </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="image/*,.pdf,.ai,.psd,.zip,.doc,.docx"
+                style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none"
+                onChange={(ev) => void onPickFile(ev)}
+              />
               <textarea
                 ref={taRef}
                 class="lc-ta"
