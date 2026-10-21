@@ -234,14 +234,40 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string): 
   return `Photo sent to the customer: ${pick.caption}. Add one short sentence about it; do not describe it again in detail.`;
 }
 
+const ENHANCER_SYSTEM =
+  'You write prompts for an image model that renders packaging mockups. Turn the customer request into ONE English prompt of 90-130 words. Rules: ' +
+  '(1) Name the exact box style and describe its real geometry: mailer box = corrugated roll-end tuck-front box, wide and shallow, hinged lid closed, visible flute edges; ' +
+  'rigid box = two-piece lid and base, thick walls, matte wrapped paper; tuck-end box = slim folding carton; pouch = stand-up pouch with gusset; use the given dimensions to get the proportions right and SAY them in words: for 10x8x4 inches write "a low, flat box, its height clearly less than half its width, landscape orientation". ' +
+  '(2) Put all printed text in double quotes exactly as the customer wrote it, printed ONLY on the lid top and on the front panel, centered, as a bold flat logo; the side panels are plain and unprinted; nothing else printed. ' +
+  '(3) Colours, material and finish exactly as requested; default to clean white corrugated kraft with natural edges. ' +
+  '(4) Scene: one box on a seamless light grey studio backdrop, 3/4 angle slightly from above, soft diffused studio light, soft shadow, 85mm lens, photorealistic, sharp, no people, no hands, no extra props, no other boxes. ' +
+  'Output only the prompt.';
+
+async function enhanceMockupPrompt(deps: AppDeps, desc: string): Promise<string> {
+  try {
+    const out = await chat(deps, [
+      { role: 'system', content: ENHANCER_SYSTEM },
+      { role: 'user', content: desc },
+    ], false);
+    const text = out.content?.trim().replace(/^["']|["']$/g, '') ?? '';
+    if (text.length > 60) return text;
+  } catch (err) {
+    alog(`enhancer failed: ${(err as Error).message}`);
+  }
+  return `Professional product photography of custom printed packaging: ${desc}. One box on a seamless light grey studio backdrop, 3/4 angle, soft studio light, photorealistic, no people, no hands.`;
+}
+
 /** Generate a FLUX.2 mockup on ComfyUI, store it and post it as a FILE message. */
 async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: string): Promise<string> {
   const base = deps.config.alex.comfyUrl;
   if (!base) return 'Mockup generation is not available right now. Describe it in words instead.';
   const desc = rawPrompt.trim();
   if (desc.length < 15) return 'Tool error: the prompt was empty. Call make_mockup again with a detailed description of the box (type, colours, logo text, material).';
-  // Always a packaging product shot: FLUX drifts to random subjects on thin prompts.
-  const prompt = `Professional product photography of custom printed packaging: ${desc}. Studio lighting, clean white background, sharp focus, realistic materials, no people, no hands.`;
+  // Prompt enhancer (same recipe as AI Studio): the big model rewrites the request
+  // into a precise FLUX prompt with the box's real geometry and proportions, logo
+  // placement and a studio set-up. FLUX drifts to random subjects on thin prompts.
+  const prompt = await enhanceMockupPrompt(deps, desc);
+  alog(`mockup prompt: ${prompt.slice(0, 200)}`);
   const prefix = `alex-${Math.random().toString(16).slice(2, 10)}`;
   const seed = Math.floor(Math.random() * 999_999_999) + 1;
   const workflow = {
@@ -250,7 +276,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     '3': { class_type: 'VAELoader', inputs: { vae_name: 'flux2-vae.safetensors' } },
     '4': { class_type: 'CLIPTextEncode', inputs: { text: prompt, clip: ['2', 0] } },
     '5': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
-    '6': { class_type: 'EmptyFlux2LatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
+    '6': { class_type: 'EmptyFlux2LatentImage', inputs: { width: 1152, height: 864, batch_size: 1 } },
     '8': {
       class_type: 'KSampler',
       inputs: {
