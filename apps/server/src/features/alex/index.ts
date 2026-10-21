@@ -266,7 +266,9 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   // Prompt enhancer (same recipe as AI Studio): the big model rewrites the request
   // into a precise FLUX prompt with the box's real geometry and proportions, logo
   // placement and a studio set-up. FLUX drifts to random subjects on thin prompts.
-  const prompt = await enhanceMockupPrompt(deps, desc);
+  let prompt = await enhanceMockupPrompt(deps, desc);
+  const lora = deps.config.alex.mockupLora;
+  if (lora) prompt = `pbxbox photo of ${prompt.replace(/^(a |an )?(photo(graph)? of )?/i, '')}`;
   alog(`mockup prompt: ${prompt.slice(0, 200)}`);
   const prefix = `alex-${Math.random().toString(16).slice(2, 10)}`;
   const seed = Math.floor(Math.random() * 999_999_999) + 1;
@@ -286,7 +288,11 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     },
     '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['3', 0] } },
     '10': { class_type: 'SaveImage', inputs: { filename_prefix: prefix, images: ['9', 0] } },
-  };
+  } as Record<string, { class_type: string; inputs: Record<string, unknown> }>;
+  if (lora) {
+    workflow['11'] = { class_type: 'LoraLoaderModelOnly', inputs: { lora_name: lora, strength_model: deps.config.alex.mockupLoraStrength, model: ['1', 0] } };
+    workflow['8'].inputs.model = ['11', 0];
+  }
   const queued = await fetch(`${base}/prompt`, {
     method: 'POST',
     signal: AbortSignal.timeout(30_000),

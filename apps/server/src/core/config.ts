@@ -24,6 +24,9 @@ export interface Config {
     name: string;
     fullAuto: boolean;
     comfyUrl: string | null;
+    /** Optional style LoRA (file name in ComfyUI models/loras) trained on the company's product photos. */
+    mockupLora: string | null;
+    mockupLoraStrength: number;
     dataDir: string;
     /** Fine-tuned "voice" model (LoRA-trained on real agent chats); optional. */
     styleBaseUrl: string | null;
@@ -105,6 +108,8 @@ export function loadConfig(): Config {
       name: env.ALEX_NAME || 'Alex',
       fullAuto: env.ALEX_FULL_AUTO !== 'off',
       comfyUrl: (env.ALEX_COMFY_URL || '').replace(/\/+$/, '') || null,
+      mockupLora: env.ALEX_MOCKUP_LORA || null,
+      mockupLoraStrength: Number(env.ALEX_MOCKUP_LORA_STRENGTH || 0.8),
       dataDir: env.ALEX_DATA_DIR || path.resolve(serverRoot, '../../alex'),
       styleBaseUrl: (env.ALEX_STYLE_BASE_URL || '').replace(/\/+$/, '') || null,
       styleApiKey: env.ALEX_STYLE_API_KEY || null,
