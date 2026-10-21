@@ -708,6 +708,27 @@ export function alexTurn(deps: AppDeps, conversationId: string): void {
       }
       alog(`draft: ${(reply ?? '').slice(0, 100)}`);
       if (!reply) return;
+      // Keep the conversation moving: if the reply has no next step and the customer
+      // is not closing, add one short follow-up question (missing detail / next action).
+      {
+        const lastUserText = ((([...convo].reverse().find((m) => m.role === 'user') as { content?: unknown })?.content ?? '') as string | unknown[]);
+        const lastText = typeof lastUserText === 'string' ? lastUserText : '';
+        const closing = /\b(thanks?|thank you|bye|goodbye|ok(ay)?|later|that's all|no thanks|great|cool)\b[.!\s]*$/i.test(lastText.trim()) || lastText.trim().length <= 3;
+        const usedTool = messages.some((m) => m.role === 'tool');
+        if (!hasQuestion(reply) && !closing && !usedTool) {
+          try {
+            const asked = convo.filter((m) => m.role === 'assistant').map((m) => (m as { content: string | null }).content ?? '').join('\n');
+            const follow = await chat(deps, [
+              { role: 'system', content: `You are ${botSenderFor(conversationId).name}, a packaging sales agent. Write ONE short next-step question (max 15 words) that moves this chat forward: ask for a missing detail (box type, size L x W x H, quantity, material, printing/finish, deadline, name/email) or offer to show a photo/mockup. Never repeat a question already asked. Output only the question.` },
+              { role: 'user', content: `Chat so far:\n${convo.map((m) => `${m.role === 'user' ? 'Customer' : 'Agent'}: ${typeof (m as { content: unknown }).content === 'string' ? (m as { content: string }).content : '[image]'}`).join('\n')}\nAgent (new reply): ${reply}\n\nQuestions already asked:\n${asked}` },
+            ], false);
+            const q = (follow.content ?? '').trim().split('\n')[0];
+            if (q && q.length < 160 && hasQuestion(q)) { reply = `${reply}\n${q}`; alog(`added next step: ${q}`); }
+          } catch (err) {
+            alog(`next-step failed: ${(err as Error).message}`);
+          }
+        }
+      }
       // Remove hallucinated attachment pseudo-tags.
       reply = reply.replace(/\s*[\[(]\s*(sent|attached|attaching|sending|photo|image|mockup)[^\])]*(image|photo|mockup|file|jpg|png)[^\])]*[\])]\s*/gi, ' ').replace(/[ \t]{2,}/g, ' ').trim();
       if (!reply) return;
