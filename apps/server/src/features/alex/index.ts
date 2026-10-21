@@ -674,6 +674,15 @@ export function alexTurn(deps: AppDeps, conversationId: string): void {
       }
       alog(`draft: ${(reply ?? '').slice(0, 100)}`);
       if (!reply) return;
+      // Drop any question sentence we already asked earlier in this chat (models love to loop on it).
+      {
+        const askedBefore = new Set(
+          convo.filter((m) => m.role === 'assistant').flatMap((m) => ((m as { content: string | null }).content ?? '').split(/(?<=\?)/)).map((q) => norm(q)).filter((q) => q.length > 8),
+        );
+        const kept = reply.split(/(?<=\?)/).filter((part) => !(/\?\s*$/.test(part) && askedBefore.has(norm(part))));
+        const trimmed = kept.join('').replace(/\n{3,}/g, '\n\n').trim();
+        if (trimmed.length >= 8 && trimmed !== reply) { alog(`dropped repeated question`); reply = trimmed; }
+      }
       if (process.env.ALEX_STYLE_MODE === 'post') {
         const styled = await styledReply(deps, botSenderFor(conversationId).name, website, convo, reply, faqFor(loadPersona(deps).faq, website.name));
         if (styled) reply = styled;
