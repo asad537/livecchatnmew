@@ -1011,12 +1011,16 @@ async function proactiveGreet(
     [data.visitorId],
   );
   if (open) return;
-  // At most one proactive opener per visitor per day.
-  const recent = await deps.db.get<{ id: string }>(
-    'SELECT id FROM conversations WHERE visitor_id = ? AND created_at > ? LIMIT 1',
-    [data.visitorId, new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()],
+  // Returning visitor: greet again as soon as they are back after a closed chat.
+  // Only hold back when they ignored an opener in the last 30 minutes (page
+  // refreshes must not pile up unanswered chats).
+  const last = await deps.db.get<{ id: string; created_at: string; status: string; replies: number }>(
+    `SELECT c.id, c.created_at, c.status,
+            (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.sender_type = 'VISITOR') AS replies
+       FROM conversations c WHERE c.visitor_id = ? ORDER BY c.created_at DESC LIMIT 1`,
+    [data.visitorId],
   );
-  if (recent) return;
+  if (last && Number(last.replies) === 0 && Date.now() - Date.parse(last.created_at) < 30 * 60 * 1000) return;
   const humanOnline = await isAnyHumanAvailable(deps, data.websiteId);
   const id = newId();
   await deps.db.run(
