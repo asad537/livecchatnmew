@@ -125,7 +125,18 @@ function toCallMeta(row: CallRow): CallMeta {
 }
 
 /** Display identity for AI-greeter messages (sender_type = 'BOT'). */
-export const BOT_SENDER = { name: 'Assistant', avatarColor: '#16a34a' }; // name set from config.alex.name at boot
+export const BOT_SENDER = { name: 'Assistant', avatarColor: '#16a34a' }; // name set from config.alex.names[0] at boot
+/** All bot display names; a conversation keeps one name for its whole life (hash of its id). */
+export const BOT_NAMES: string[] = [];
+const BOT_COLORS = ['#16a34a', '#0ea5e9', '#f59e0b', '#8b5cf6', '#ef4444', '#14b8a6'];
+export function botSenderFor(conversationId: string): { name: string; avatarColor: string } {
+  if (BOT_NAMES.length === 0) return BOT_SENDER;
+  // FNV-1a: evenly spread even for v4 UUIDs (a plain *31 hash was biased).
+  let h = 0x811c9dc5;
+  for (let i = 0; i < conversationId.length; i++) h = Math.imul(h ^ conversationId.charCodeAt(i), 0x01000193) >>> 0;
+  const idx = h % BOT_NAMES.length;
+  return { name: BOT_NAMES[idx], avatarColor: BOT_COLORS[idx % BOT_COLORS.length] };
+}
 
 // ─── Hydration ───────────────────────────────────────────────
 
@@ -185,7 +196,7 @@ export async function hydrateMessages(deps: AppDeps, rows: MessageRow[]): Promis
     call: row.call_id ? (calls.get(row.call_id) ?? null) : null,
     sender:
       row.sender_type === 'BOT'
-        ? BOT_SENDER
+        ? botSenderFor(row.conversation_id)
         : row.sender_user_id
           ? (senders.get(row.sender_user_id) ?? null)
           : null,

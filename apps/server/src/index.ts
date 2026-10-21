@@ -15,7 +15,7 @@ import { ensureSeed } from './seed.js';
 import { buildApiRouter } from './http/router.js';
 import { attachRealtime } from './realtime/index.js';
 import { startKnowledgeRefresher } from './features/knowledge/index.js';
-import { BOT_SENDER } from './domain/messages.js';
+import { BOT_SENDER, BOT_NAMES } from './domain/messages.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -57,7 +57,8 @@ async function main(): Promise<void> {
   }
 
   const deps: AppDeps = { config, db, presence, io, blocklist, cache };
-  BOT_SENDER.name = config.alex.name;
+  BOT_NAMES.splice(0, BOT_NAMES.length, ...config.alex.names);
+  BOT_SENDER.name = config.alex.names[0] ?? config.alex.name;
   console.log(`[cache] ${cache.kind} cache enabled`);
 
   app.use(buildApiRouter(deps));

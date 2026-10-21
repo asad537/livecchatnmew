@@ -14,7 +14,7 @@ socket.on('widget:ready', async (r) => {
   log(`ready as visitor ${r.visitor?.id}`);
   for (const body of msgs) {
     log(`VISITOR> ${body}`);
-    const done = new Promise((res) => { resolveBot = res; setTimeout(res, 75000); });
+    const done = new Promise((res) => { resolveBot = res; setTimeout(res, 150000); });
     socket.emit('widget:message', { body, tempId: String(Math.random()) });
     await done; resolveBot = null;
   }

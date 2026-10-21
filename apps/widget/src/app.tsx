@@ -300,11 +300,11 @@ export function App({ server, widgetKey }: { server: string; widgetKey: string }
       if ((message.senderType === 'AGENT' || message.senderType === 'BOT') && soundOnRef.current) {
         playPing();
       }
-      if (message.senderType === 'AGENT') {
+      if (message.senderType === 'AGENT' || message.senderType === 'BOT') {
         notifyFlutter('CHAT_MESSAGE_RECEIVED');
         setUnread((u) => u + 1);
       }
-      if (message.senderType === 'AGENT' && !openRef.current) {
+      if ((message.senderType === 'AGENT' || message.senderType === 'BOT') && !openRef.current) {
         // Auto-open on an agent message — unless the visitor closed the
         // widget themselves, then just keep counting on the launcher badge.
         if (dismissedRef.current) setUnread((u) => u + 1);

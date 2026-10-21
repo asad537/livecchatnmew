@@ -7,3 +7,4 @@ storage/
 .DS_Store
 *.backup-*
 alex/photos/
+alex/alex.log

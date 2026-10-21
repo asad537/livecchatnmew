@@ -25,6 +25,15 @@ export interface Config {
     fullAuto: boolean;
     comfyUrl: string | null;
     dataDir: string;
+    /** Fine-tuned "voice" model (LoRA-trained on real agent chats); optional. */
+    styleBaseUrl: string | null;
+    styleApiKey: string | null;
+    styleModel: string;
+    /** Display names rotated per conversation (first = default). */
+    names: string[];
+    /** Greet visitors proactively a few seconds after they arrive. */
+    proactive: boolean;
+    proactiveDelayMs: number;
   };
   autoTranslate: boolean;   // cross-language chat: translate visitor↔agent (uses the AI engine)
   smtpHost: string | null;
@@ -97,6 +106,12 @@ export function loadConfig(): Config {
       fullAuto: env.ALEX_FULL_AUTO !== 'off',
       comfyUrl: (env.ALEX_COMFY_URL || '').replace(/\/+$/, '') || null,
       dataDir: env.ALEX_DATA_DIR || path.resolve(serverRoot, '../../alex'),
+      styleBaseUrl: (env.ALEX_STYLE_BASE_URL || '').replace(/\/+$/, '') || null,
+      styleApiKey: env.ALEX_STYLE_API_KEY || null,
+      styleModel: env.ALEX_STYLE_MODEL || 'alex-4b',
+      names: (env.ALEX_NAMES || env.ALEX_NAME || 'Alex,Sara,Daniel,Emma').split(',').map((n) => n.trim()).filter(Boolean),
+      proactive: env.ALEX_PROACTIVE !== 'off',
+      proactiveDelayMs: Number(env.ALEX_PROACTIVE_DELAY_MS || 6000),
     },
     // Auto-translate is on by default (turns itself off when no AI engine is
     // configured — see features/translate). Set AUTO_TRANSLATE=off to disable.

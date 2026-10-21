@@ -20,6 +20,7 @@ import {
 } from '../core/auth.js';
 import { hydrateMessages, postMessage, type MessageRow } from '../domain/messages.js';
 import { maybeBotReply } from '../features/aibot/index.js';
+import { postGreeting } from '../features/alex/index.js';
 import { sendTranscriptEmail } from '../features/email/index.js';
 import { captureVisitorInfo } from '../features/capture/index.js';
 import { clientIp, localCountry, lookupCountry, updateVisitorGeo } from '../features/geo/index.js';
@@ -995,6 +996,38 @@ function attachWidgetNamespace(deps: AppDeps, ns: Namespace): void {
   });
 }
 
+async function proactiveGreet(
+  deps: AppDeps,
+  socket: Socket,
+  data: WidgetSocketData,
+  website: WebsiteRow,
+): Promise<void> {
+  if (data.conversationId || !socket.connected) return;
+  const open = await deps.db.get<{ id: string }>(
+    "SELECT id FROM conversations WHERE visitor_id = ? AND status IN ('WAITING','OFFERED','ACTIVE') LIMIT 1",
+    [data.visitorId],
+  );
+  if (open) return;
+  // At most one proactive opener per visitor per day.
+  const recent = await deps.db.get<{ id: string }>(
+    'SELECT id FROM conversations WHERE visitor_id = ? AND created_at > ? LIMIT 1',
+    [data.visitorId, new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()],
+  );
+  if (recent) return;
+  const humanOnline = await isAnyHumanAvailable(deps, data.websiteId);
+  const id = newId();
+  await deps.db.run(
+    "INSERT INTO conversations (id, website_id, visitor_id, status, assigned_user_id, created_at, activated_at, closed_at, human_online_on_arrival) VALUES (?, ?, ?, 'WAITING', NULL, ?, NULL, NULL, ?)",
+    [id, data.websiteId, data.visitorId, nowIso(), humanOnline ? 1 : 0],
+  );
+  data.conversationId = id;
+  await socket.join(convRoom(id));
+  await postGreeting(deps, id, website.name);
+  await emitInboxUpdate(deps, id);
+  await emitConversationStatus(deps, id);
+  void broadcastVisitors(deps, data.websiteId);
+}
+
 async function onWidgetConnected(
   deps: AppDeps,
   socket: Socket,
@@ -1080,6 +1113,18 @@ async function onWidgetConnected(
   });
 
   await broadcastVisitors(deps, data.websiteId);
+
+  // Alex proactive greeting: a few seconds after a visitor with no open chat
+  // arrives, the AI opens the conversation itself (like the human agents did).
+  if (!conv && deps.config.alex.baseUrl && deps.config.alex.proactive) {
+    const timer = setTimeout(() => {
+      void proactiveGreet(deps, socket, data, ctx.websiteRow).catch((err: unknown) =>
+        console.warn('[alex] proactive greeting failed:', (err as Error).message),
+      );
+    }, deps.config.alex.proactiveDelayMs);
+    timer.unref?.();
+    socket.on('disconnect', () => clearTimeout(timer));
+  }
 }
 
 // ═════════════════════════════ /agent ════════════════════════
