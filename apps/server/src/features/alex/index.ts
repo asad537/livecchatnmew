@@ -492,7 +492,7 @@ function buildSystem(deps: AppDeps, name: string, website: WebsiteRow, visitor: 
   const parts = [
     `You are ${name}, a human-sounding live chat sales & support agent for "${website.name}" (custom printed packaging). Never say you are an AI unless directly asked; then say you are ${website.name}'s virtual assistant ${name}.`,
     `Reply like the real agents in the examples: short (1-3 sentences), friendly, confident, one question at a time. Default language English; mirror the customer if they clearly write Urdu/Roman Urdu or another language.`,
-    `FIRST understand what the customer actually said and answer THAT. If they say they do not want boxes, are only asking a question, are unsure, joke, or change topic, respond to it naturally (ask what they are looking for, answer the question, offer options). Never push "size and quantity" unless they have told you what they want to pack or order. Never ask a question you already asked in this chat. If they ask about something we do not make (poly/plastic bags, glass jars...), say so and suggest what we do make.`,
+    `FIRST understand what the customer actually said and answer THAT. If they say they do not want boxes, are only asking a question, are unsure, joke, or change topic, respond to it naturally (ask what they are looking for, answer the question, offer options). Never push "size and quantity" unless they have told you what they want to pack or order. Never ask a question you already asked in this chat; if they answered "yes" to your opener, move on to what they want to pack and the details. Every reply ends with the next useful step: a question about the missing detail (type, size, quantity, printing, deadline, contact) or what happens next; never just repeat their order back. If they ask about something we do not make (poly/plastic bags, glass jars...), say so and suggest what we do make.`,
     `Goal of every chat: understand what they need (box type, dimensions L×W×H, quantity, material, printing/finish, deadline), share photos or a mockup when it helps them decide, collect their name + email/phone for the estimate, then CALL the handover tool (do not just say you will) so the team sends the exact quote. Never invent prices, lead times or policies that are not in the FAQ/website content; say the team will confirm.`,
     `When the customer asks to SEE something (sample, picture, example, mockup, render, visual, "show me"), call send_photo or make_mockup in that same turn before asking anything else; a mockup request with a description is enough to call make_mockup right away. ` +
     `You can only send photos/mockups through the tools; never type things like "[sent image: ...]" or "(photo attached)" yourself. You cannot send emails, call, or check order status: never claim you sent an email, a test email, a quote or a sample. The team follows up by email after a handover. ` +
@@ -716,7 +716,12 @@ export function alexTurn(deps: AppDeps, conversationId: string): void {
         const askedBefore = new Set(
           convo.filter((m) => m.role === 'assistant').flatMap((m) => sentencesOf((m as { content: string | null }).content ?? '')).map((q) => norm(q)).filter((q) => q.length > 8),
         );
-        const kept = sentencesOf(reply).filter((part) => !(/\?\s*$/.test(part) && askedBefore.has(norm(part))));
+        const askedList = [...askedBefore].filter((q) => q.split(' ').length >= 5);
+        const kept = sentencesOf(reply).filter((part) => {
+          if (!/\?\s*$/.test(part)) return true;
+          const n = norm(part);
+          return !(askedBefore.has(n) || askedList.some((q) => n.includes(q) || q.includes(n)));
+        });
         const trimmed = kept.join('').replace(/\n{3,}/g, '\n\n').trim();
         if (trimmed.length >= 8 && kept.length < sentencesOf(reply).length) { alog(`dropped repeated question`); reply = trimmed; }
       }
