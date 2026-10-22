@@ -323,19 +323,20 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
 }
 
 const ENHANCER_SYSTEM =
-  'You write prompts for an image model that renders packaging mockups. Turn the customer request into ONE English prompt of 90-130 words. Rules: ' +
-  '(1) Name the exact box style and describe its real geometry: mailer box = corrugated roll-end tuck-front box, wide and shallow, hinged lid closed, visible flute edges; ' +
-  'rigid box = two-piece lid and base, thick walls, matte wrapped paper; tuck-end box = slim folding carton; pouch = stand-up pouch with gusset; use the given dimensions to get the proportions right and SAY them in words: for 10x8x4 inches write "a low, flat box, its height clearly less than half its width, landscape orientation". ' +
-  '(2) Put all printed text in double quotes exactly as the customer wrote it, printed ONLY on the lid top and on the front panel, centered, as a bold flat logo; the side panels are plain and unprinted; nothing else printed. ' +
-  '(3) Colours, material and finish exactly as requested; default to clean white corrugated kraft with natural edges. ' +
+  'You write prompts for an image model that renders packaging mockups for a custom packaging company. You get the recent chat and the request; work out from the CHAT what box the customer actually wants and write ONE English prompt of 90-130 words. Rules: ' +
+  '(1) The product decides the box: say the exact style and shape and describe its real geometry. Mailer box = corrugated roll-end tuck-front, wide and shallow, hinged lid; rigid box = two-piece lid and base, thick walls, matte wrapped paper; tuck-end = slim folding carton; pouch = stand-up pouch with gusset; ' +
+  'heart-shaped / round / hexagon / tube boxes keep that silhouette (e.g. "a heart-shaped two-piece rigid box with a domed heart lid"); chocolate, candle, perfume, cosmetics, bakery etc. imply the matching box type and, if asked, inserts with the product visible. ' +
+  'If the customer gave dimensions, express the proportions in words (low and flat / tall and narrow / cube-like). NEVER reuse any number or example from these instructions. ' +
+  '(2) Printed text: ONLY the brand/logo text the customer actually gave, in double quotes, on the lid top and front panel, centered, as a bold flat logo. If they gave none, write "a small generic logo mark, no readable text". Never print slogans, taglines, website names or anything from the company side. ' +
+  '(3) Colours, material and finish exactly as requested; if not stated, choose what suits the product (e.g. deep red matte rigid for a Valentine chocolate box), not plain white by default. ' +
   '(4) Scene: one box on a seamless light grey studio backdrop, 3/4 angle slightly from above, soft diffused studio light, soft shadow, 85mm lens, photorealistic, sharp, no people, no hands, no extra props, no other boxes. ' +
   'Output only the prompt.';
 
-async function enhanceMockupPrompt(deps: AppDeps, desc: string): Promise<string> {
+async function enhanceMockupPrompt(deps: AppDeps, desc: string, convoText: string): Promise<string> {
   try {
     const out = await chat(deps, [
       { role: 'system', content: ENHANCER_SYSTEM },
-      { role: 'user', content: desc },
+      { role: 'user', content: `Recent chat:\n${convoText.slice(-2500)}\n\nMockup request / tool description: ${desc}` },
     ], false);
     const text = out.content?.trim().replace(/^["']|["']$/g, '') ?? '';
     if (text.length > 60) return text;
@@ -346,11 +347,10 @@ async function enhanceMockupPrompt(deps: AppDeps, desc: string): Promise<string>
 }
 
 /** Generate a FLUX.2 mockup on ComfyUI, store it and post it as a FILE message. */
-async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: string, wmText: string): Promise<string> {
+async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: string, wmText: string, convoText: string): Promise<string> {
   const base = deps.config.alex.comfyUrl;
   if (!base) return 'Mockup generation is not available right now. Describe it in words instead.';
-  const desc = rawPrompt.trim();
-  if (desc.length < 15) return 'Tool error: the prompt was empty. Call make_mockup again with a detailed description of the box (type, colours, logo text, material).';
+  const desc = rawPrompt.trim().length >= 15 ? rawPrompt.trim() : 'the box the customer described in the chat';
   // Prompt enhancer (same recipe as AI Studio): the big model rewrites the request
   // into a precise FLUX prompt with the box's real geometry and proportions, logo
   // placement and a studio set-up. FLUX drifts to random subjects on thin prompts.
@@ -360,7 +360,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     // Image-to-image: build the mockup on the customer's own box/design.
     prompt = `Studio product photo of the packaging shown in the reference image: keep its box style, shape, proportions, logo and printed design. Apply these changes requested by the customer exactly (colours, material, finish, inserts, text): ${desc}. Seamless light grey studio backdrop, 3/4 angle, soft studio light, photorealistic, no people, no hands.`;
   } else {
-    prompt = await enhanceMockupPrompt(deps, desc);
+    prompt = await enhanceMockupPrompt(deps, desc, convoText);
   }
   const lora = deps.config.alex.mockupLora;
   if (lora) prompt = ref ? `pbxbox ${prompt.charAt(0).toLowerCase()}${prompt.slice(1)}` : `pbxbox photo of ${prompt.replace(/^(a |an )?(photo(graph)? of )?/i, '')}`;
@@ -516,7 +516,7 @@ async function maybeAutoHandover(deps: AppDeps, conversationId: string, convo: C
   }
 }
 
-async function runTool(deps: AppDeps, conversationId: string, call: ToolCall, lastVisitorText: string, wmText: string): Promise<string> {
+async function runTool(deps: AppDeps, conversationId: string, call: ToolCall, lastVisitorText: string, wmText: string, convoText: string): Promise<string> {
   let args: Record<string, string> = {};
   const raw: unknown = call.function.arguments;
   if (raw && typeof raw === 'object') args = raw as Record<string, string>;
@@ -528,7 +528,6 @@ async function runTool(deps: AppDeps, conversationId: string, call: ToolCall, la
     }
   }
   // The tool parser sometimes drops the arguments: fall back to the customer's own words.
-  if (call.function.name === 'make_mockup' && !args.prompt) args.prompt = lastVisitorText;
   if (call.function.name === 'send_photo' && !args.query) args.query = lastVisitorText;
   if (call.function.name === 'handover' && !args.summary) args.summary = `Customer said: ${lastVisitorText}`;
   alog(`tool ${call.function.name} ${JSON.stringify(args).slice(0, 300)}`);
@@ -537,7 +536,7 @@ async function runTool(deps: AppDeps, conversationId: string, call: ToolCall, la
       case 'send_photo':
         return await sendPhoto(deps, conversationId, String(args.query ?? ''), wmText);
       case 'make_mockup':
-        return await makeMockup(deps, conversationId, String(args.prompt ?? ''), wmText);
+        return await makeMockup(deps, conversationId, String(args.prompt ?? ''), wmText, convoText);
       case 'handover':
         return await handover(deps, conversationId, String(args.reason ?? 'other'), String(args.summary ?? ''));
       default:
@@ -818,7 +817,8 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
             // Stop if a human took over while a tool (mockup) was running.
             const fresh = await deps.db.get<ConvRow>('SELECT id, status FROM conversations WHERE id = ?', [conversationId]);
             if (!fresh || fresh.status !== 'WAITING') return;
-            const result = await runTool(deps, conversationId, call, lastQuestions, deps.config.alex.watermarkText || website.name);
+            const convoText = convo.slice(-10).map((m) => `${m.role === 'user' ? 'Customer' : 'Agent'}: ${typeof (m as { content: unknown }).content === 'string' ? (m as { content: string }).content : '[image]'}`).join('\n');
+            const result = await runTool(deps, conversationId, call, lastQuestions, deps.config.alex.watermarkText || website.name, convoText);
             messages.push({ role: 'tool', tool_call_id: call.id, content: result });
           }
         }
