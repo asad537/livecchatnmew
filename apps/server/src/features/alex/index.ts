@@ -401,109 +401,130 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const base = deps.config.alex.comfyUrl;
   if (!base) return 'Mockup generation is not available right now. Describe it in words instead.';
   const desc = rawPrompt.trim().length >= 15 ? rawPrompt.trim() : 'the box the customer described in the chat';
-  // Prompt enhancer (same recipe as AI Studio): the big model rewrites the request
-  // into a precise FLUX prompt with the box's real geometry and proportions, logo
-  // placement and a studio set-up. FLUX drifts to random subjects on thin prompts.
   const ref = await recentCustomerImage(deps, conversationId);
+
+  // ── 1. prompt
   let prompt: string;
   if (ref) {
-    // Image-to-image: build the mockup on the customer's own box/design.
     prompt = `Studio product photo of the packaging shown in the reference image: keep its box style, shape, proportions, logo and printed design. Apply these changes requested by the customer exactly (colours, material, finish, inserts, text): ${desc}. Seamless light grey studio backdrop, 3/4 angle, soft studio light, photorealistic, no people, no hands.`;
   } else {
     prompt = await enhanceMockupPrompt(deps, desc, convoText);
   }
-  const SHAPE_RE = /\b(heart|round|circular|circle|hexagon|hexagonal|octagon|tube|cylinder|cylindrical|triangle|triangular|pillow|oval|star)[ -]?(shaped|box|lid|silhouette)?\b/i;
-  const specialShape = SHAPE_RE.test(desc) || SHAPE_RE.test(prompt) || SHAPE_RE.test(convoText.slice(-600));
+  const SHAPE_RE = /\b(heart|round|circular|circle|hexagon|hexagonal|octagon|octagonal|tube|cylinder|cylindrical|triangle|triangular|pillow|oval|star|diamond|pyramid)[ -]?(shaped|box|lid|silhouette)?\b/i;
   const shapeWord = (desc.match(SHAPE_RE) ?? prompt.match(SHAPE_RE) ?? convoText.slice(-600).match(SHAPE_RE))?.[1]?.toLowerCase();
-  if (specialShape && shapeWord && !ref) {
-    prompt = `The ENTIRE box is ${shapeWord}-shaped: its outline seen from above is a ${shapeWord} silhouette (lid and base both ${shapeWord}-shaped), NOT a round, square or rectangular box with a ${shapeWord} printed on it. ${prompt}`;
-  }
-  // The style LoRA was trained on rectangular boxes and fights unusual silhouettes.
+  const specialShape = Boolean(shapeWord) && !ref;
+  if (specialShape) prompt = `A ${shapeWord}-shaped two-piece rigid box with a ${shapeWord}-shaped lid and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`;
+  // The style LoRA was trained on rectangular boxes and pulls unusual silhouettes back to rectangles.
   const lora = specialShape ? null : deps.config.alex.mockupLora;
-  if (lora) prompt = ref ? `pbxbox ${prompt.charAt(0).toLowerCase()}${prompt.slice(1)}` : `pbxbox photo of ${prompt.replace(/^(a |an )?(photo(graph)? of )?/i, '')}`;
   if (specialShape) alog(`special shape "${shapeWord}": LoRA off`);
-  alog(`mockup prompt${ref ? ' (reference: ' + ref.name + ')' : ''}: ${prompt.slice(0, 200)}`);
-  // Upload the reference to ComfyUI and size the latent to it.
-  let inputName: string | null = null;
-  let editW = 1152;
-  let editH = 864;
-  if (ref) {
+  const withTrigger = (p: string): string => (lora ? `pbxbox ${p.charAt(0).toLowerCase()}${p.slice(1)}` : p);
+  const expectedText = [...prompt.matchAll(/"([^"]{2,40})"/g)].map((m) => m[1]).filter((t) => !/^(pbxbox|studio)/i.test(t));
+  const OPEN_RE = /\b(open(ed)?|inside|insert|tray|lid (lifted|off|removed)|contents?|showing the)\b/i;
+  const customerWords = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-4).join(' ');
+  const wantsOpen = !ref && OPEN_RE.test(desc + ' ' + customerWords);
+  alog(`mockup prompt${ref ? ' (reference: ' + ref.name + ')' : ''}${specialShape ? ' [shape: ' + shapeWord + ']' : ''}${wantsOpen ? ' [two-stage open view]' : ''}: ${prompt.slice(0, 160)}`);
+
+  // ── 2. render helpers
+  const uploadRef = async (data: Buffer, mime: string): Promise<{ name: string; w: number; h: number } | null> => {
     try {
-      const meta = await sharp(ref.data, { failOn: 'none' }).metadata();
+      const meta = await sharp(data, { failOn: 'none' }).metadata();
       const rw = meta.width ?? 1024;
       const rh = meta.height ?? 1024;
-      const scale = Math.min(1152 / Math.max(rw, rh), 1536 / Math.max(rw, rh), Math.max(768 / Math.max(rw, rh), 0.1));
-      const s2 = Math.max(scale, 768 / Math.max(rw, rh));
-      editW = Math.max(512, Math.round((rw * Math.min(s2, 1152 / Math.max(rw, rh))) / 32) * 32);
-      editH = Math.max(512, Math.round((rh * Math.min(s2, 1152 / Math.max(rw, rh))) / 32) * 32);
+      const k = Math.min(1152 / Math.max(rw, rh), Math.max(768 / Math.max(rw, rh), 0.1));
+      const w = Math.max(512, Math.round((rw * k) / 32) * 32);
+      const h = Math.max(512, Math.round((rh * k) / 32) * 32);
       const fd = new FormData();
-      fd.append('image', new Blob([ref.data], { type: ref.mime }), `ref-${newId().slice(0, 8)}.${ref.mime === 'image/png' ? 'png' : 'jpg'}`);
+      fd.append('image', new Blob([data], { type: mime }), `ref-${newId().slice(0, 8)}.${mime === 'image/png' ? 'png' : 'jpg'}`);
       fd.append('overwrite', 'true');
       const up = await fetch(`${base}/upload/image`, { method: 'POST', body: fd, signal: AbortSignal.timeout(45_000) });
       const upj = (await up.json()) as { name?: string; subfolder?: string };
-      if (up.ok && upj.name) inputName = [upj.subfolder, upj.name].filter(Boolean).join('/');
-      else alog(`reference upload failed: ${up.status}`);
+      if (!up.ok || !upj.name) { alog(`reference upload failed: ${up.status}`); return null; }
+      return { name: [upj.subfolder, upj.name].filter(Boolean).join('/'), w, h };
     } catch (err) {
       alog(`reference upload failed: ${(err as Error).message}`);
+      return null;
     }
-  }
-  const prefix = `alex-${Math.random().toString(16).slice(2, 10)}`;
-  const seed = Math.floor(Math.random() * 999_999_999) + 1;
-  const workflow = {
-    '1': { class_type: 'UNETLoader', inputs: { unet_name: 'flux-2-klein-4b.safetensors', weight_dtype: 'default' } },
-    '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_3_4b.safetensors', type: 'flux2', device: 'default' } },
-    '3': { class_type: 'VAELoader', inputs: { vae_name: 'flux2-vae.safetensors' } },
-    '4': { class_type: 'CLIPTextEncode', inputs: { text: prompt, clip: ['2', 0] } },
-    '5': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
-    '6': { class_type: 'EmptyFlux2LatentImage', inputs: { width: inputName ? editW : 1152, height: inputName ? editH : 864, batch_size: 1 } },
-    '8': {
-      class_type: 'KSampler',
-      inputs: {
-        seed, steps: 4, cfg: 1.0, sampler_name: 'euler', scheduler: 'simple', denoise: 1.0,
-        model: ['1', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0],
-      },
-    },
-    '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['3', 0] } },
-    '10': { class_type: 'SaveImage', inputs: { filename_prefix: prefix, images: ['9', 0] } },
-  } as Record<string, { class_type: string; inputs: Record<string, unknown> }>;
-  if (lora) {
-    workflow['11'] = { class_type: 'LoraLoaderModelOnly', inputs: { lora_name: lora, strength_model: deps.config.alex.mockupLoraStrength, model: ['1', 0] } };
-    workflow['8'].inputs.model = ['11', 0];
-  }
-  if (inputName) {
-    // Reference-guided generation (FLUX.2 klein edit path, as in AI Studio).
-    workflow['20'] = { class_type: 'LoadImage', inputs: { image: inputName } };
-    workflow['21'] = { class_type: 'ImageScale', inputs: { image: ['20', 0], upscale_method: 'lanczos', width: editW, height: editH, crop: 'disabled' } };
-    workflow['22'] = { class_type: 'VAEEncode', inputs: { pixels: ['21', 0], vae: ['3', 0] } };
-    workflow['23'] = { class_type: 'ReferenceLatent', inputs: { conditioning: ['4', 0], latent: ['22', 0] } };
-    workflow['5'].inputs.conditioning = ['23', 0];
-    workflow['8'].inputs.positive = ['23', 0];
-  }
-  const expectedText = [...prompt.matchAll(/"([^"]{2,40})"/g)].map((m) => m[1]).filter((t) => !/^(pbxbox|studio)/i.test(t));
-  let bytes = await runComfy(base, workflow, prefix);
-  // Render QA (as in AI Studio): wrong shape/scene or misspelled brand text → one retry with a new seed.
-  try {
-    let qa = await checkRender(deps, bytes, expectedText, prompt);
+  };
+  const renderOnce = async (text: string, refImg: { name: string; w: number; h: number } | null): Promise<Buffer> => {
+    const prefix = `alex-${Math.random().toString(16).slice(2, 10)}`;
+    const seed = Math.floor(Math.random() * 999_999_999) + 1;
+    const wf: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
+      '1': { class_type: 'UNETLoader', inputs: { unet_name: 'flux-2-klein-4b.safetensors', weight_dtype: 'default' } },
+      '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_3_4b.safetensors', type: 'flux2', device: 'default' } },
+      '3': { class_type: 'VAELoader', inputs: { vae_name: 'flux2-vae.safetensors' } },
+      '4': { class_type: 'CLIPTextEncode', inputs: { text, clip: ['2', 0] } },
+      '5': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
+      '6': { class_type: 'EmptyFlux2LatentImage', inputs: { width: refImg ? refImg.w : 1152, height: refImg ? refImg.h : 864, batch_size: 1 } },
+      '8': { class_type: 'KSampler', inputs: { seed, steps: 4, cfg: 1.0, sampler_name: 'euler', scheduler: 'simple', denoise: 1.0, model: ['1', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0] } },
+      '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['3', 0] } },
+      '10': { class_type: 'SaveImage', inputs: { filename_prefix: prefix, images: ['9', 0] } },
+    };
+    if (lora) {
+      wf['11'] = { class_type: 'LoraLoaderModelOnly', inputs: { lora_name: lora, strength_model: deps.config.alex.mockupLoraStrength, model: ['1', 0] } };
+      wf['8'].inputs.model = ['11', 0];
+    }
+    if (refImg) {
+      wf['20'] = { class_type: 'LoadImage', inputs: { image: refImg.name } };
+      wf['21'] = { class_type: 'ImageScale', inputs: { image: ['20', 0], upscale_method: 'lanczos', width: refImg.w, height: refImg.h, crop: 'disabled' } };
+      wf['22'] = { class_type: 'VAEEncode', inputs: { pixels: ['21', 0], vae: ['3', 0] } };
+      wf['23'] = { class_type: 'ReferenceLatent', inputs: { conditioning: ['4', 0], latent: ['22', 0] } };
+      wf['5'].inputs.conditioning = ['23', 0];
+      wf['8'].inputs.positive = ['23', 0];
+    }
+    return runComfy(base, wf, prefix);
+  };
+  /** Render + QA loop: the reviewer's reason is fed back into the next attempt (works for any shape/scene). */
+  const renderChecked = async (text: string, refImg: { name: string; w: number; h: number } | null, attempts: number, qaSummary?: string): Promise<{ bytes: Buffer; ok: boolean }> => {
+    let bytes = await renderOnce(text, refImg);
+    let qa = await checkRender(deps, bytes, expectedText, qaSummary ?? text).catch((err) => ({ ok: true, why: `qa skipped: ${(err as Error).message}` }));
     alog(`mockup QA ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
-    for (let attempt = 2; !qa.ok && attempt <= 3; attempt++) {
-      (workflow['8'].inputs as { seed: number }).seed = Math.floor(Math.random() * 999_999_999) + 1;
-      const prefixN = `alex-${Math.random().toString(16).slice(2, 10)}`;
-      (workflow['10'].inputs as { filename_prefix: string }).filename_prefix = prefixN;
-      const bytesN = await runComfy(base, workflow, prefixN);
-      qa = await checkRender(deps, bytesN, expectedText, prompt);
-      alog(`mockup QA attempt ${attempt} ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
-      bytes = bytesN;
+    let best = { bytes, ok: qa.ok };
+    for (let i = 2; !qa.ok && i <= attempts; i++) {
+      let fix = qa.why.replace(/^no:?\s*/i, '').trim();
+      try {
+        const pos = await chat(deps, [
+          { role: 'system', content: 'Rewrite the reviewer note as ONE short positive instruction for an image generator: say only what the image must show, never what to avoid, and never name wrong shapes or objects. Output the instruction only.' },
+          { role: 'user', content: fix },
+        ], false);
+        if (pos.content?.trim()) fix = pos.content.trim().slice(0, 200);
+      } catch { /* keep raw note */ }
+      bytes = await renderOnce(`${text}\nCorrection (the previous render was rejected): ${fix}`, refImg);
+      qa = await checkRender(deps, bytes, expectedText, qaSummary ?? text).catch(() => ({ ok: true, why: 'qa skipped' }));
+      alog(`mockup QA attempt ${i} ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
+      best = { bytes, ok: qa.ok };
     }
-  } catch (err) {
-    alog(`mockup QA skipped: ${(err as Error).message}`);
+    return best;
+  };
+
+  // ── 3. generate
+  let bytes: Buffer;
+  let note = '';
+  if (ref) {
+    const refImg = await uploadRef(ref.data, ref.mime);
+    bytes = (await renderChecked(withTrigger(prompt), refImg, 2)).bytes;
+  } else if (wantsOpen) {
+    // Stage 1: the closed box (any silhouette renders far more reliably closed).
+    const closedPrompt = prompt
+      .split(/(?<=[.!?])\s+/)
+      .filter((sent) => !OPEN_RE.test(sent))
+      .join(' ') + ' The box is closed with its lid on.';
+    const stage1 = await renderChecked(withTrigger(closedPrompt), null, 3);
+    // Stage 2: open the same box (image-to-image keeps shape, colours and logo).
+    const refImg = await uploadRef(stage1.bytes, 'image/png');
+    const openPrompt = `Same packaging as in the reference image, identical shape, colours, finish and logo. Now the lid is lifted off and leans beside the base, showing the inside: ${desc}. One box only, studio backdrop, photorealistic.`;
+    const stage2 = refImg ? await renderChecked(openPrompt, refImg, 2, `${shapeWord ? `A ${shapeWord}-shaped box (base and lid both ${shapeWord}-shaped). ` : ''}${openPrompt}`) : { bytes: stage1.bytes, ok: false };
+    if (stage2.ok) bytes = stage2.bytes;
+    else { bytes = stage1.bytes; note = ' (the open view did not render cleanly, so the closed box was sent)'; }
+  } else {
+    bytes = (await renderChecked(withTrigger(prompt), null, 3)).bytes;
   }
 
+  // ── 4. watermark, store, post
   try {
     bytes = Buffer.from((await watermark(bytes, wmText)).data);
   } catch (err) {
     alog(`watermark failed on mockup: ${(err as Error).message}`);
   }
-
   const privateDir = path.join(deps.config.storageDir, 'private');
   fs.mkdirSync(privateDir, { recursive: true });
   const fileId = newId();
@@ -518,8 +539,8 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   );
   await postMessage(deps, { conversationId, senderType: 'BOT', body: name, kind: 'FILE', fileId });
   return ref
-    ? 'Mockup sent to the customer, built on the image they shared (their own box/design). Say it is a quick AI concept based on their design and ask if they want changes.'
-    : 'Mockup image sent to the customer. Say it is a quick AI concept (the real product is made to their exact spec) and ask if they want changes.';
+    ? `Mockup sent to the customer, built on the image they shared (their own box/design). Say it is a quick AI concept based on their design and ask if they want changes.${note}`
+    : `Mockup image sent to the customer. Say it is a quick AI concept (the real product is made to their exact spec) and ask if they want changes.${note}`;
 }
 
 async function handover(deps: AppDeps, conversationId: string, reason: string, summary: string): Promise<string> {
