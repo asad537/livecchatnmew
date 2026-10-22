@@ -393,7 +393,7 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
     { role: 'system', content: 'You are a strict QA checker for packaging mockup renders. Reply with exactly "YES" if everything passes, otherwise "NO: <short reason>".' },
     { role: 'user', content: [
       { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
-      { type: 'text', text: `Requested mockup: ${summary.slice(0, 700)}\n(1) Does the image clearly show that packaging with the right SHAPE and style? Be strict about silhouettes: a heart-shaped box means the box outline itself is a heart (a round or square box with a heart printed on it is NO). For polygon boxes COUNT the sides of the lid/base: triangle 3, pentagon 5, hexagon 6, octagon 8 — a different count fails (an 8-sided box is NOT a hexagon). An open box with inserts must show the inside. Colour and finish must match. One clean product photo, no distortions or impossible geometry.${textQ}${oneBoxQ} Ignore the watermark at the bottom.` },
+      { type: 'text', text: `Requested mockup: ${summary.slice(0, 700)}\n(1) Does the image clearly show that packaging with the right SHAPE and style? Be strict about silhouettes: a heart-shaped box means the box outline itself is a heart (a round or square box with a heart printed on it is NO). For polygon boxes COUNT the sides of the lid/base: triangle 3, pentagon 5, hexagon 6, octagon 8 — a different count fails (an 8-sided box is NOT a hexagon). An open box with inserts must show the inside. Colour and finish must match; where the logo sits (lid vs front) does NOT matter. One clean product photo, no distortions or impossible geometry.${textQ}${oneBoxQ} Ignore the watermark at the bottom.` },
     ] as unknown as string },
   ], false);
   const a = (out.content ?? '').trim();
@@ -501,6 +501,23 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     return best;
   };
 
+  // ── 2b. shape reference from the real photo library (any shape we have a photo of)
+  let shapeRef: { name: string; w: number; h: number } | null = null;
+  if (specialShape && shapeWord) {
+    try {
+      const row = await deps.db.get<{ path: string; caption: string }>(
+        `SELECT path, caption FROM alex_photos WHERE is_product = 1 AND (caption LIKE ? OR tags LIKE ?) ORDER BY RAND() LIMIT 1`,
+        [`%${shapeWord}%`, `%${shapeWord}%`],
+      );
+      if (row && fs.existsSync(row.path)) {
+        shapeRef = await uploadRef(gunzipSync(fs.readFileSync(row.path)), 'image/jpeg');
+        if (shapeRef) alog(`shape reference from library: ${row.caption.slice(0, 80)}`);
+      }
+    } catch (err) {
+      alog(`shape reference lookup failed: ${(err as Error).message}`);
+    }
+  }
+
   // ── 3. generate
   let bytes: Buffer;
   let note = '';
@@ -513,7 +530,10 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       .split(/(?<=[.!?])\s+/)
       .filter((sent) => !OPEN_RE.test(sent))
       .join(' ') + ' The box is closed with its lid on.';
-    const stage1 = await renderChecked(withTrigger(closedPrompt), null, 3);
+    let stage1 = shapeRef
+      ? await renderChecked(`Use the reference image only for the box SHAPE (a ${shapeWord}-shaped box) and proportions; new colours, finish and logo as described: ${closedPrompt}`, shapeRef, 2)
+      : { bytes: Buffer.alloc(0), ok: false };
+    if (!stage1.ok) stage1 = await renderChecked(withTrigger(closedPrompt), null, 3);
     // Stage 2: open the same box (image-to-image keeps shape, colours and logo).
     const refImg = await uploadRef(stage1.bytes, 'image/png');
     const openPrompt = `Same packaging as in the reference image, identical shape, colours, finish and logo. Now its ${shapeWord ? shapeWord + '-shaped ' : ''}lid is lifted off and leans beside the ${shapeWord ? shapeWord + '-shaped ' : ''}base, showing the inside: ${desc}. One box only, studio backdrop, photorealistic.`;
@@ -521,7 +541,11 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     if (stage2.ok) bytes = stage2.bytes;
     else { bytes = stage1.bytes; note = ' (the open view did not render cleanly, so the closed box was sent)'; }
   } else {
-    bytes = (await renderChecked(withTrigger(prompt), null, 3)).bytes;
+    let r = shapeRef
+      ? await renderChecked(`Use the reference image only for the box SHAPE (a ${shapeWord}-shaped box) and proportions; new colours, finish and logo as described: ${prompt}`, shapeRef, 2)
+      : { bytes: Buffer.alloc(0), ok: false };
+    if (!r.ok) r = await renderChecked(withTrigger(prompt), null, 3);
+    bytes = r.bytes;
   }
 
   // ── 4. watermark, store, post
