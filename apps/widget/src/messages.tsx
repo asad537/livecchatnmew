@@ -143,7 +143,17 @@ export function FileCard({ m, server, token }: { m: LocalMessage; server: string
   if (href && file.scanStatus === 'CLEAN' && isImage) {
     return (
       <a class="lc-image" href={href} target="_blank" rel="noopener noreferrer" title={file.originalName}>
-        <img src={href} alt={file.originalName} loading="lazy" />
+        <img
+          src={href}
+          alt={file.originalName}
+          loading="lazy"
+          onError={(e) => {
+            // A reload mid-download (server restart, flaky network) must not leave a broken picture: retry a few times.
+            const img = e.currentTarget as HTMLImageElement & { _tries?: number };
+            img._tries = (img._tries ?? 0) + 1;
+            if (img._tries <= 4) setTimeout(() => { img.src = `${href}&r=${Date.now()}`; }, 1500 * img._tries);
+          }}
+        />
       </a>
     );
   }

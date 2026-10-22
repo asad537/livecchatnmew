@@ -614,9 +614,10 @@ export function App({ server, widgetKey }: { server: string; widgetKey: string }
 
   const onPickFile = (e: Event) => {
     const input = e.currentTarget as HTMLInputElement;
-    const files = input.files;
+    // Copy the list first: input.files is live and empties when the value is reset.
+    const files = Array.from(input.files ?? []);
     input.value = '';
-    if (files && files.length > 0) void uploadFiles(files);
+    if (files.length > 0) void uploadFiles(files);
   };
 
   const [dragOver, setDragOver] = useState(false);
