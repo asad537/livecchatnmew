@@ -388,12 +388,13 @@ const ENHANCER_SYSTEM =
 
 const SHEET_ENHANCER_SYSTEM =
   'You write prompts for an image model that renders a packaging PRESENTATION SHEET (one image laid out as a grid of five photos) for a custom packaging company. You get the recent chat and the request; work out from the CHAT what box the customer actually wants, then write ONE English prompt of 140-200 words that follows this structure exactly: ' +
-  '"Professional packaging presentation sheet for a <product> box, one image laid out as a grid of five photos with thin white gutters. Large main photo top-left: a closed <full box description: style and real geometry, proportions in words, material, colour, finish, decorative accents, logo or brand text and where it sits> standing on <scene>. Top-right photo: the same box open <how this style opens>, showing <fitted insert and the product> inside. Bottom row, three smaller photos of the same box: seen straight from the front, from a three-quarter angle, and standing upright on its narrow end. Every panel shows the identical box and design. Photorealistic product photography, <lighting>, sharp." ' +
+  '"Professional packaging presentation sheet for a <product> box, one image laid out as a grid of five photos with thin white gutters. Large main photo top-left: a closed <full box description: style and real geometry, proportions in words, material, colour, finish, decorative accents, logo or brand text and where it sits> standing on <scene>. Top-right photo: the same box open <how this style opens>, showing <fitted insert and the product> inside. Bottom row, three smaller photos of the same closed box: seen straight from the front, from a three-quarter angle, and from directly above. Every panel shows the identical box and design. Photorealistic product photography, <lighting>, sharp." ' +
   'Rules: (1) The product decides the style: perfume, cosmetics, jewellery, watches, premium gifts = rigid box with a full-depth magnetic lid or a hinged book-style lid (thick walls, matte wrapped paper, optionally a thin gold or silver foil border line on the front); chocolate or sweets = rigid two-piece box with a tray insert; candle = rigid two-piece or tuck-top box; mailer = corrugated roll-end tuck-front box with a hinged lid; tuck-end = slim folding carton; pouch = stand-up pouch; heart, round, hexagon or tube boxes: the box AND its lid keep that silhouette in all five photos (the open view shows the same shaped lid lifted off and resting beside the shaped base, never a hinged rectangular box). ' +
   'Dimensions: describe the proportions in words only (wider than tall, slim depth, cube-like, tall and narrow...); never write numbers, units, dimension arrows or labels anywhere in the prompt. The logo is the brand name alone: no emblem, monogram or initial above or beside it. ' +
   '(2) Printed text: ONLY a brand or logo name the customer explicitly gave as such, written in double quotes, as a foil or printed logo centered on the lid or front panel; product words, requests and misspellings are not brand text. If no brand name was given, write "a small generic logo mark, no readable text". Never slogans, taglines, website names or anything from the company side, and no other text anywhere. ' +
   '(3) Colours, material and finish exactly as requested; if not stated, choose what suits the product. The scene suits the product (cream marble table with blurred gold decor for perfume or cosmetics, rustic wood for candles, clean white studio for mailers). ' +
-  '(4) The open view shows the matching product inside (a perfume bottle, chocolates, a candle, the item they pack) sitting in a fitted insert; no people, no hands. Output only the prompt.';
+  '(4) The open view shows the matching product inside (a perfume bottle, chocolates, a candle, the item they pack) sitting in a fitted insert; no people, no hands. ' +
+  '(5) If the customer asked for a window (die-cut window, clear window, PVC window), it is part of the box in EVERY closed view: name its shape (round, square, rectangular, heart, oval) and position on the front panel or lid, with the product visible through it; never leave it out. Output only the prompt.';
 
 async function enhanceMockupPrompt(deps: AppDeps, desc: string, convoText: string, sheet = false): Promise<string> {
   try {
@@ -517,6 +518,7 @@ async function checkSheet(deps: AppDeps, png: Buffer, expectedText: string[], su
         `"colour_ok": true/false — main colour/finish as requested.\n` +
         `"text_ok": true/false/null — ${expectedText.length ? `the printed brand text on the box reads exactly ${expectedText.map((t) => `"${t}"`).join(' and ')} (case/font do not matter; wrong, missing, extra or garbled letters anywhere on the box or inside it = false)` : 'null if no brand text was requested; false if random readable or garbled text appears on the box or inside it'}. Dimension labels beside the box do not count.\n` +
         `"extra_text": true/false — true if any other text, numbers, dimension arrows/labels, monograms, initials or emblems appear on the box, inside it or anywhere in the image (besides the brand name and the website watermark).\n` +
+        `"window_ok": true/false/null — null if the request mentions no window; true if the requested window (right shape) is visible on the closed box in the main photo; false if it is missing or a different shape.\n` +
         `"defects": short note on impossible geometry, duplicated or broken parts, people or hands, or none.\n` +
         `Ignore the website watermark at the bottom.` },
     ] as unknown as string },
@@ -532,6 +534,7 @@ async function checkSheet(deps: AppDeps, png: Buffer, expectedText: string[], su
   if (j.colour_ok === false) problems.push('wrong colour');
   if (j.text_ok === false) problems.push(expectedText.length ? 'brand text misspelled or extra text' : 'unwanted text on the box');
   if (j.extra_text === true) problems.push('the brand name is the only text; no numbers, labels, monograms or emblems anywhere');
+  if (j.window_ok === false) problems.push('the closed box must show the requested window with the product visible through it');
   const defects = String(j.defects ?? '').trim();
   if (defects && !/^(none|no|n\/a|-)/i.test(defects)) problems.push(defects.slice(0, 80));
   return { ok: problems.length === 0, why: problems.length ? problems.join('; ') : 'ok' };
@@ -675,8 +678,11 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   } else {
     prompt = await enhanceMockupPrompt(deps, desc, convoText, sheetMode);
   }
-  const SHAPE_RE = /\b(heart|round|circular|circle|hexagon|hexagonal|octagon|octagonal|tube|cylinder|cylindrical|triangle|triangular|pillow|oval|star|diamond|pyramid)[ -]?(shaped|box|lid|silhouette)?\b/i;
-  const shapeWord = (desc.match(SHAPE_RE) ?? prompt.match(SHAPE_RE) ?? convoText.slice(-600).match(SHAPE_RE))?.[1]?.toLowerCase();
+  const SHAPE_RE = /\b(heart|round|circular|circle|hexagon|hexagonal|octagon|octagonal|tube|cylinder|cylindrical|triangle|triangular|pillow|oval|star|diamond|pyramid)(?![ -]?(window|cut-?out|hole|opening|corner|corners|edge|edges|logo|label|sticker|handle))[ -]?(shaped|box|lid|silhouette)?\b/i;
+  // The box shape comes from the customer's own words (not the enhancer's guesses), ignoring words that describe a window, cutout, corner or logo ("round window" is not a round box).
+  const stripWin = (t: string): string => t.replace(/(?:\b[\w-]+ ){0,2}\b(?:window|windows|cut-?outs?|holes?|openings?|corners?|edges?|logo|labels?|stickers?|handles?)\b/gi, ' ');
+  const customerAll = stripWin(convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-6).join(' '));
+  const shapeWord = (stripWin(desc).match(SHAPE_RE) ?? customerAll.match(SHAPE_RE))?.[1]?.toLowerCase();
   const specialShape = Boolean(shapeWord) && !ref && !revision;
   const SIDES: Record<string, string> = { triangle: 'three', triangular: 'three', pentagon: 'five', hexagon: 'six', hexagonal: 'six', octagon: 'eight', octagonal: 'eight', diamond: 'four' };
   const sidesWord = shapeWord ? SIDES[shapeWord] : undefined;
