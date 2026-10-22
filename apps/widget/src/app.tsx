@@ -950,7 +950,7 @@ export function App({ server, widgetKey }: { server: string; widgetKey: string }
           <div class="lc-body" ref={bodyRef}>
             {messages.length === 0 && website.greeting && <div class="lc-greet">{website.greeting}</div>}
             {renderMessages(messages, { server, token: visitorToken, fallbackAgent: agent })}
-            {agentTyping && !ended && <TypingRow agent={agent} server={server} />}
+            {agentTyping && !ended && <TypingRow agent={agent ?? ([...messages].reverse().find((m) => m.senderType === 'BOT' && m.sender)?.sender ?? { name: 'Agent', avatarColor: '#6c5ce7' })} server={server} />}
             {showInfoForm && (
               <InfoForm
                 onSubmit={submitInfo}

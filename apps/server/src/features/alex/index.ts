@@ -336,7 +336,7 @@ const ENHANCER_SYSTEM =
 const SHEET_ENHANCER_SYSTEM =
   'You write prompts for an image model that renders a packaging PRESENTATION SHEET (one image laid out as a grid of five photos) for a custom packaging company. You get the recent chat and the request; work out from the CHAT what box the customer actually wants, then write ONE English prompt of 140-200 words that follows this structure exactly: ' +
   '"Professional packaging presentation sheet for a <product> box, one image laid out as a grid of five photos with thin white gutters. Large main photo top-left: a closed <full box description: style and real geometry, proportions in words, material, colour, finish, decorative accents, logo or brand text and where it sits> standing on <scene>. Top-right photo: the same box open <how this style opens>, showing <fitted insert and the product> inside. Bottom row, three smaller photos of the same box: seen straight from the front, from a three-quarter angle, and standing upright on its narrow end. Every panel shows the identical box and design. Photorealistic product photography, <lighting>, sharp." ' +
-  'Rules: (1) The product decides the style: perfume, cosmetics, jewellery, watches, premium gifts = rigid box with a full-depth magnetic lid or a hinged book-style lid (thick walls, matte wrapped paper, optionally a thin gold or silver foil border line on the front); chocolate or sweets = rigid two-piece box with a tray insert; candle = rigid two-piece or tuck-top box; mailer = corrugated roll-end tuck-front box with a hinged lid; tuck-end = slim folding carton; pouch = stand-up pouch; heart, round, hexagon or tube boxes keep that silhouette in every panel. ' +
+  'Rules: (1) The product decides the style: perfume, cosmetics, jewellery, watches, premium gifts = rigid box with a full-depth magnetic lid or a hinged book-style lid (thick walls, matte wrapped paper, optionally a thin gold or silver foil border line on the front); chocolate or sweets = rigid two-piece box with a tray insert; candle = rigid two-piece or tuck-top box; mailer = corrugated roll-end tuck-front box with a hinged lid; tuck-end = slim folding carton; pouch = stand-up pouch; heart, round, hexagon or tube boxes: the box AND its lid keep that silhouette in all five photos (the open view shows the same shaped lid lifted off and resting beside the shaped base, never a hinged rectangular box). ' +
   'Dimensions: describe the proportions in words only (wider than tall, slim depth, cube-like, tall and narrow...); never write numbers, units, dimension arrows or labels anywhere in the prompt. The logo is the brand name alone: no emblem, monogram or initial above or beside it. ' +
   '(2) Printed text: ONLY a brand or logo name the customer explicitly gave as such, written in double quotes, as a foil or printed logo centered on the lid or front panel; product words, requests and misspellings are not brand text. If no brand name was given, write "a small generic logo mark, no readable text". Never slogans, taglines, website names or anything from the company side, and no other text anywhere. ' +
   '(3) Colours, material and finish exactly as requested; if not stated, choose what suits the product. The scene suits the product (cream marble table with blurred gold decor for perfume or cosmetics, rustic wood for candles, clean white studio for mailers). ' +
@@ -459,7 +459,8 @@ async function checkSheet(deps: AppDeps, png: Buffer, expectedText: string[], su
         `This image is a grid of several photos of ONE box design. Judge it and return JSON with these keys:\n` +
         `"same_box": true/false — every panel shows the same box (same shape, colour, lid style, logo); a panel showing a clearly different box = false.\n` +
         `"main_closed": true/false — the large main photo shows the box fully closed with its lid seated (no gap, nothing floating or ajar).\n` +
-        `"silhouette_ok": true/false — the box outline matches the requested shape (heart = heart outline; polygons: count the sides; rectangular otherwise).\n` +
+        `"silhouette_ok": true/false — in the main photo the box outline matches the requested shape (heart = heart outline; polygons: count the sides; rectangular otherwise).\n` +
+        `"panels_wrong_shape": number of panels (out of all panels, including the open view) where the box or its lid does NOT have the requested shape (e.g. a rectangular box in a heart-box sheet).\n` +
         `"colour_ok": true/false — main colour/finish as requested.\n` +
         `"text_ok": true/false/null — ${expectedText.length ? `the printed brand text on the box reads exactly ${expectedText.map((t) => `"${t}"`).join(' and ')} (case/font do not matter; wrong, missing, extra or garbled letters anywhere on the box or inside it = false)` : 'null if no brand text was requested; false if random readable or garbled text appears on the box or inside it'}. Dimension labels beside the box do not count.\n` +
         `"extra_text": true/false — true if any other text, numbers, dimension arrows/labels, monograms, initials or emblems appear on the box, inside it or anywhere in the image (besides the brand name and the website watermark).\n` +
@@ -472,6 +473,7 @@ async function checkSheet(deps: AppDeps, png: Buffer, expectedText: string[], su
   if (Object.keys(j).length === 0) return { ok: /^\s*yes/i.test(raw), why: raw.slice(0, 120) };
   const problems: string[] = [];
   if (j.same_box === false) problems.push('every panel must show the identical box design');
+  if (Number(j.panels_wrong_shape ?? 0) > 0) problems.push('every panel, including the open view, must show the box and its lid in the requested shape');
   if (j.main_closed === false) problems.push('the main photo must show the box fully closed with the lid seated');
   if (j.silhouette_ok === false) problems.push('wrong box shape');
   if (j.colour_ok === false) problems.push('wrong colour');
@@ -483,13 +485,76 @@ async function checkSheet(deps: AppDeps, png: Buffer, expectedText: string[], su
 }
 
 const DIMS_RE = /(\d+(?:\.\d+)?)\s*(?:"|''|in(?:ch(?:es)?)?|cm|mm)?\s*[x×*]\s*(\d+(?:\.\d+)?)\s*(?:"|''|in(?:ch(?:es)?)?|cm|mm)?\s*[x×*]\s*(\d+(?:\.\d+)?)\s*("|''|in(?:ch(?:es)?)?|cm|mm)?/i;
-/** "5x2x4 inches" in the customer's words → "Size: 5 × 2 × 4 in" (null if no size was given). */
-function sizeLabelFrom(text: string): string | null {
+/** "5x2x4 inches" in the customer's words → { l, w, h, unit } (null if no size was given). */
+function sizePartsFrom(text: string): { l: string; w: string; h: string; unit: string } | null {
   const m = text.match(DIMS_RE);
   if (!m) return null;
   const unitRaw = (m[4] ?? '').toLowerCase();
   const unit = unitRaw.startsWith('cm') ? 'cm' : unitRaw.startsWith('mm') ? 'mm' : 'in';
-  return `Size: ${m[1]} × ${m[2]} × ${m[3]} ${unit}`;
+  return { l: m[1], w: m[2], h: m[3], unit };
+}
+function sizeLabelFrom(text: string): string | null {
+  const d = sizePartsFrom(text);
+  return d ? `Size: ${d.l} × ${d.w} × ${d.h} ${d.unit}` : null;
+}
+/** Ask the vision model where the closed box is in the main (top-left) panel; Qwen-VL answers in a 0-1000 grid. */
+async function locateMainBox(deps: AppDeps, png: Buffer, W: number, H: number): Promise<[number, number, number, number] | null> {
+  try {
+    const out = await chat(deps, [
+      { role: 'user', content: [
+        { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
+        { type: 'text', text: 'Locate the closed gift box (only the box itself, not the table, shadow or decor) in the LARGE top-left photo. Output ONLY JSON {"bbox_2d":[x1,y1,x2,y2]}.' },
+      ] as unknown as string },
+    ], false);
+    const raw = out.content ?? '';
+    const m = raw.match(/"bbox_2d"\s*:\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]/);
+    if (!m) { alog(`locate box: no bbox in ${raw.slice(0, 80)}`); return null; }
+    const [x1, y1, x2, y2] = [Number(m[1]) * W / 1000, Number(m[2]) * H / 1000, Number(m[3]) * W / 1000, Number(m[4]) * H / 1000];
+    // Must sit inside the main (top-left) panel and be a real box, not a sliver.
+    if (x2 > W * 0.58 || y2 > H * 0.66 || x2 - x1 < W * 0.08 || y2 - y1 < H * 0.08) { alog(`locate box: implausible bbox ${[x1, y1, x2, y2].map(Math.round).join(',')}`); return null; }
+    return [x1, y1, x2, y2];
+  } catch (err) {
+    alog(`locate box failed: ${(err as Error).message}`);
+    return null;
+  }
+}
+/** Draw clean dimension lines (length below, height on the right, depth receding from the corner) with labels around the box. */
+async function drawDimensions(buf: Buffer, bb: [number, number, number, number], dims: { l: string; w: string; h: string; unit: string }, W: number, H: number): Promise<Buffer> {
+  const [x1, y1, x2, y2] = bb;
+  const fs = Math.round(W / 52);
+  const gap = Math.round(W / 70);
+  const tick = Math.round(fs * 0.45);
+  const stroke = Math.max(2, Math.round(W / 480));
+  const line = (ax: number, ay: number, bx: number, by: number): string => {
+    const dx = bx - ax, dy = by - ay, len = Math.hypot(dx, dy) || 1, nx = -dy / len * tick, ny = dx / len * tick;
+    return `<g stroke="#ffffff" stroke-width="${stroke}" stroke-linecap="round" filter="url(#sh)"><line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}"/><line x1="${ax + nx}" y1="${ay + ny}" x2="${ax - nx}" y2="${ay - ny}"/><line x1="${bx + nx}" y1="${by + ny}" x2="${bx - nx}" y2="${by - ny}"/></g>`;
+  };
+  const label = (cx: number, cy: number, t: string): string => {
+    const bw = Math.round(t.length * fs * 0.62) + fs, bh = Math.round(fs * 1.55);
+    return `<rect x="${cx - bw / 2}" y="${cy - bh / 2}" width="${bw}" height="${bh}" rx="${bh / 3}" fill="rgba(0,0,0,0.62)"/><text x="${cx}" y="${cy + fs * 0.36}" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-size="${fs}" font-weight="bold" fill="#ffffff">${escapeXml(t)}</text>`;
+  };
+  const u = dims.unit;
+  const parts: string[] = [];
+  // length: under the box
+  const ly = Math.min(H - fs * 2, y2 + gap);
+  parts.push(line(x1, ly, x2, ly), label((x1 + x2) / 2, ly + fs * 1.3, `${dims.l} ${u}`));
+  // height: right of the box
+  const hx = Math.min(W * 0.62, x2 + gap);
+  parts.push(line(hx, y1, hx, y2), label(hx + fs * 2.6, (y1 + y2) / 2, `${dims.h} ${u}`));
+  // depth: short receding line from the bottom-right corner
+  const panelRight = W * 0.5 - gap * 2; // the main photo ends at the vertical gutter
+  const ratio = Math.min(0.6, Math.max(0.2, (Number(dims.w) || 1) / (Number(dims.l) || 1)));
+  const dx0 = x1 - gap * 0.4, dy0 = ly + gap * 0.4;
+  let d = Math.min((x2 - x1) * ratio * 0.6, W * 0.11);
+  const dx1 = dx0 - d * Math.cos(Math.PI / 6), dy1 = dy0 + d * Math.sin(Math.PI / 6);
+  if (dx1 > fs && dy1 < H * 0.64 && hx + fs * 4 < panelRight) {
+    parts.push(line(dx0, dy0, dx1, dy1), label(Math.max(fs * 2.2, dx1 - fs * 0.4), dy1 + fs * 1.2, `${dims.w} ${u}`));
+  } else {
+    d = 0;
+    parts.push(label(x1 + fs * 2.2, y1 - fs * 1.1, `depth ${dims.w} ${u}`));
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><defs><filter id="sh" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="0" stdDeviation="1.2" flood-color="#000" flood-opacity="0.8"/></filter></defs>${parts.join('')}</svg>`;
+  return sharp(buf).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).png().toBuffer();
 }
 async function sizeBadge(buf: Buffer, label: string): Promise<Buffer> {
   const meta = await sharp(buf, { failOn: 'none' }).metadata();
@@ -566,7 +631,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const customerWordsEarly = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-4).join(' ');
   const openEarly = OPEN_RE.test(desc + ' ' + customerWordsEarly) && OPEN_RE.test(customerWordsEarly);
   if (specialShape && sheetMode) {
-    prompt = `All panels show one and the same ${shapeWord}-shaped rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}; its whole silhouette is a ${shapeWord}, with a matching ${shapeWord}-shaped lid. ${prompt}`;
+    prompt = `All five photos show one and the same ${shapeWord}-shaped rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}: in the closed views, the open view and the three small views alike, the base and the lid are both ${shapeWord}-shaped and the whole silhouette is a ${shapeWord}; in the open view the ${shapeWord}-shaped lid is lifted off and rests beside the ${shapeWord}-shaped base. ${prompt}`;
   } else if (specialShape) {
     prompt = openEarly
       ? `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}, with a ${shapeWord}-shaped lid that has its own side walls (a shallow ${shapeWord} tray, not a flat sheet) and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`
@@ -619,7 +684,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       // It prints quote characters literally, so pass the brand text bare and spell it out once.
       const bare = text.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'");
       const spelled = expectedText.length
-        ? ` The only printed text on the box is the brand name ${expectedText.join(' and ')} in clean lettering; no other letters, initials, monograms, emblems, marks or small secondary lines under the name anywhere on the box${sheetMode ? ', and no numbers, labels or other text anywhere in the image' : ''}.`
+        ? ` The box is printed with the brand name ${expectedText.join(' and ')} only; no other words, letters, initials, monograms, emblems, marks or small secondary lines under the name anywhere on the box${sheetMode ? ', and no numbers, labels or other text anywhere in the image' : ''}.`
         : sheetMode ? ' No readable text on the box and no numbers, labels or text anywhere in the image.' : '';
       text = bare + spelled + (sheetMode ? ' Every panel shows the identical box; nothing else besides the box, its insert and its product.' : ' Exactly one box in the frame on an empty seamless backdrop, nothing else in the picture.');
       const wq: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
@@ -739,9 +804,18 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
 
   // ── 4. size badge (sheet), watermark, store, post
   if (sheetMode) {
-    const sizeLabel = sizeLabelFrom(customerWords) ?? sizeLabelFrom(desc) ?? sizeLabelFrom(convoText.split('\n').filter((l) => l.startsWith('Customer:')).join(' '));
-    if (sizeLabel) {
-      try { bytes = await sizeBadge(bytes, sizeLabel); alog(`size badge: ${sizeLabel}`); } catch (err) { alog(`size badge failed: ${(err as Error).message}`); }
+    const allCustomer = convoText.split('\n').filter((l) => l.startsWith('Customer:')).join(' ');
+    const dims = sizePartsFrom(customerWords) ?? sizePartsFrom(desc) ?? sizePartsFrom(allCustomer);
+    if (dims) {
+      try {
+        const meta = await sharp(bytes, { failOn: 'none' }).metadata();
+        const W = meta.width ?? 1344, H = meta.height ?? 1024;
+        const bb = await locateMainBox(deps, bytes, W, H);
+        if (bb) { bytes = await drawDimensions(bytes, bb, dims, W, H); alog(`dimension lines drawn: ${dims.l}x${dims.w}x${dims.h} ${dims.unit} at ${bb.map(Math.round).join(',')}`); }
+        else { bytes = await sizeBadge(bytes, `Size: ${dims.l} × ${dims.w} × ${dims.h} ${dims.unit}`); alog('size badge (box not located)'); }
+      } catch (err) {
+        alog(`dimension overlay failed: ${(err as Error).message}`);
+      }
     }
   }
   try {
@@ -765,8 +839,8 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   lastMockups.set(conversationId, { prompt, seed: finalSeed, at: Date.now() });
   if (lastMockups.size > 500) lastMockups.delete(lastMockups.keys().next().value as string);
   return ref
-    ? `Mockup sent to the customer, built on the image they shared (their own box/design). Reply in at most two short sentences: one saying here is a quick AI concept based on their design, then one question.${note}`
-    : `${sheetMode ? 'Mockup presentation sheet sent to the customer (closed box, open view with the product inside, and side views, with its size). ' : 'Mockup image sent to the customer. '}Reply in at most two short sentences: one saying here is a quick AI concept of their box, then one question (changes, or the next missing detail). No long disclaimers.${note}`;
+    ? `Mockup sent to the customer, built on the image they shared (their own box/design). Reply in at most 15 words: one short line that this is the mockup from their design, then one short question.${note}`
+    : `${sheetMode ? 'Mockup presentation sheet sent to the customer (closed box, open view with the product inside, and side views, with its size). ' : 'Mockup image sent to the customer. '}Reply in at most 15 words: one short line that this is their mockup, then one short question (changes, or the next missing detail). No adjectives, no disclaimers.${note}`;
 }
 
 async function handover(deps: AppDeps, conversationId: string, reason: string, summary: string): Promise<string> {
@@ -888,7 +962,7 @@ function buildSystem(deps: AppDeps, name: string, website: WebsiteRow, visitor: 
   const { persona, faq } = loadPersona(deps);
   const parts = [
     `You are ${name}, a human-sounding live chat sales & support agent for "${website.name}" (custom printed packaging). Never say you are an AI unless directly asked; then say you are ${website.name}'s virtual assistant ${name}.`,
-    `Reply like the real agents in the examples: short (1-3 sentences), friendly, confident, exactly ONE question per message (never "Also, ..." with a second question). Default language English; mirror the customer if they clearly write Urdu/Roman Urdu or another language.`,
+    `Reply like the real agents in the examples: SHORT (one or two plain sentences, at most 25 words in total; no adjectives like luxurious/elegant, no recap of what they said), friendly, confident, exactly ONE question per message (never "Also, ..." with a second question). Default language English; mirror the customer if they clearly write Urdu/Roman Urdu or another language.`,
     `Policies (minimum order, lead times, prices, shipping): if the website content and the FAQ disagree, the WEBSITE CONTENT wins — e.g. if the site says "no minimum", a single box can be ordered (at a higher unit price); never contradict the customer's own website. ` +
     `FIRST understand what the customer actually said and answer THAT. If they say they do not want boxes, are only asking a question, are unsure, joke, or change topic, respond to it naturally (ask what they are looking for, answer the question, offer options). Never push "size and quantity" unless they have told you what they want to pack or order. Never ask a question you already asked in this chat; if they answered "yes" to your opener, move on to what they want to pack and the details. Every reply ends with the next useful step: a question about the missing detail (type, size, quantity, printing, deadline, contact) or what happens next; never just repeat their order back. When the customer is closing (thanks, that's all, bye), close warmly in one line, invite them to come back or share an email for a quote, and never pressure them for details. If they ask about something we do not make (poly/plastic bags, glass jars...), say so and suggest what we do make.`,
     `Goal of every chat: understand what they need (box type, dimensions L×W×H, quantity, material, printing/finish, deadline), share photos or a mockup when it helps them decide, collect their name + email/phone for the estimate, then CALL the handover tool (do not just say you will) so the team sends the exact quote. Never invent prices, lead times or policies that are not in the FAQ/website content; say the team will confirm.`,
@@ -1210,6 +1284,19 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
         const q = parts.find((p) => /\?\s*$/.test(p));
         const short = [stmt, q].filter(Boolean).join('').trim();
         if (short && short !== reply.trim()) { reply = short; alog('shortened caption'); }
+      }
+      // Real agents write short messages: compress anything over ~28 words.
+      if (reply.split(/\s+/).length > 22) {
+        try {
+          const short = await chat(deps, [
+            { role: 'system', content: 'Shorten this live-chat reply to at most 18 words: plain words, keep its meaning and its ONE question if it has one, no new facts, no greetings. Output only the shortened reply.' },
+            { role: 'user', content: reply },
+          ], false);
+          const t = (short.content ?? '').trim().replace(/^["']|["']$/g, '');
+          if (t && t.split(/\s+/).length < reply.split(/\s+/).length && (!hasQuestion(reply) || hasQuestion(t))) { alog(`compressed ${reply.split(/\s+/).length}→${t.split(/\s+/).length} words`); reply = t; }
+        } catch (err) {
+          alog(`compress failed: ${(err as Error).message}`);
+        }
       }
       // Agents don't use emojis in replies.
       reply = reply.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{1F900}-\u{1F9FF}]/gu, '').replace(/[ \t]{2,}/g, ' ').replace(/\s+([.!?,])/g, '$1');
