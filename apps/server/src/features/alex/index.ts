@@ -383,21 +383,48 @@ async function runComfy(base: string, workflow: Record<string, { class_type: str
   return Buffer.from(await res.arrayBuffer());
 }
 
-/** Vision QA: does the render show the requested box (shape, style, open/closed, colour) and the brand text exactly? */
-async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], summary: string): Promise<{ ok: boolean; why: string }> {
-  const textQ = expectedText.length
-    ? ` (2) Is the printed text spelled exactly as ${expectedText.map((t) => `"${t}"`).join(' and ')} (letter CASE and font do not matter: "CHOCO LOVE" counts as "Choco Love"; only wrong/missing/extra letters fail)?`
-    : ' (2) No brand text was requested: the box must carry no readable words (a small abstract logo mark is fine).';
-  const oneBoxQ = ' (3) Exactly ONE box with exactly ONE lid in the picture (its own lifted lid is fine); two boxes, two lids, floating or duplicated parts, or any readable text other than the requested brand text (garbled letters count as text) fail.';
+/** Vision QA (structured): silhouette, colour, text, one box / one lid, lid state. */
+async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], summary: string, openRequested = false): Promise<{ ok: boolean; why: string }> {
   const out = await chat(deps, [
-    { role: 'system', content: 'You are a strict QA checker for packaging mockup renders. Reply with exactly "YES" if everything passes, otherwise "NO: <short reason>".' },
+    { role: 'system', content: 'You are a strict QA checker for packaging mockup renders. Reply with ONLY a JSON object, no prose.' },
     { role: 'user', content: [
       { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
-      { type: 'text', text: `Requested mockup: ${summary.slice(0, 700)}\n(1) Does the image clearly show that packaging with the right overall SHAPE (silhouette) and colour? Be strict about silhouettes: a heart-shaped box means the box outline itself is a heart (a round or square box with a heart printed on it is NO). For polygon boxes COUNT the sides of the lid/base: triangle 3, pentagon 5, hexagon 6, octagon 8 — a different count fails (an 8-sided box is NOT a hexagon). An open box with inserts must show the inside. Colour must match. Details that do NOT matter and must never fail the check: box construction subtype (tuck-top vs roll-end vs two-piece), corrugated flute texture vs smooth board, closure type, where the logo sits, lid thickness, flat vs domed or bevelled lid, exact proportions, lighting, background shade, whether a lid is slightly ajar. If a lid is shown, it must be a real lid with its own side walls/rim that could fit over the base (a flat sheet or thin panel is NOT a lid and fails), resting on the surface or on the box — a lid floating in mid-air or shown upside down fails. A CLOSED box must look physically correct: the lid sits flush on the base with the same outline, no gap, no hovering, no mismatched sizes. One clean product photo, no distortions or impossible geometry.${textQ}${oneBoxQ} Ignore the watermark at the bottom.` },
+      { type: 'text', text:
+        `Requested mockup: ${summary.slice(0, 700)}\n` +
+        `Judge the image and return JSON with these keys:\n` +
+        `"silhouette_ok": true/false — the box outline matches the requested shape (heart = heart outline; polygons: count the sides, hexagon 6, octagon 8; mailer/rigid = rectangular). Construction subtype, flute texture and closure style do NOT matter.\n` +
+        `"colour_ok": true/false — main colour/finish as requested.\n` +
+        `"text_ok": true/false/null — ${expectedText.length ? `the printed brand text reads exactly ${expectedText.map((t) => `"${t}"`).join(' and ')} (letter case/font do not matter; wrong, missing or extra letters = false)` : 'null if no brand text was requested; false if random readable or garbled text appears'}.\n` +
+        `"boxes": number of separate boxes visible (a lid counts with its box).\n` +
+        `"lids": number of lids visible.\n` +
+        `"lid_state": one of "closed_flush" (lid on, fits the base, no gap), "closed_ajar" (lid on but partly open/tilted or a flap open), "off_resting" (lid removed and resting on the table or leaning on the box, top face up), "floating" (lid in mid-air / not touching anything), "flat_sheet" (the lid is a flat panel with no side walls), "none".\n` +
+        `"defects": short note on impossible geometry, duplicated parts, or none.\n` +
+        `Ignore the website watermark at the bottom.` },
     ] as unknown as string },
   ], false);
-  const a = (out.content ?? '').trim();
-  return { ok: /^\s*yes/i.test(a), why: a.slice(0, 120) };
+  const raw = (out.content ?? '').trim();
+  let j: Record<string, unknown> = {};
+  try {
+    j = JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g, '')) as Record<string, unknown>;
+  } catch {
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (m) { try { j = JSON.parse(m[0]) as Record<string, unknown>; } catch { /* ignore */ } }
+  }
+  if (Object.keys(j).length === 0) return { ok: /^\s*yes/i.test(raw), why: raw.slice(0, 120) };
+  const lid = String(j.lid_state ?? 'none');
+  const problems: string[] = [];
+  if (j.silhouette_ok === false) problems.push('wrong box shape');
+  if (j.colour_ok === false) problems.push('wrong colour');
+  if (j.text_ok === false) problems.push(expectedText.length ? 'brand text misspelled' : 'unwanted text on the box');
+  if (Number(j.boxes ?? 1) > 1) problems.push('more than one box');
+  if (Number(j.lids ?? 1) > 1) problems.push('more than one lid');
+  if (lid === 'floating') problems.push('lid floating in mid-air');
+  if (lid === 'flat_sheet') problems.push('lid is a flat sheet without side walls');
+  if (!openRequested && lid !== 'closed_flush' && lid !== 'none') problems.push('box must be fully closed with the lid flush on the base');
+  if (openRequested && (lid === 'closed_flush' || lid === 'closed_ajar')) problems.push('box must be shown open with the lid off, resting beside the base');
+  const defects = String(j.defects ?? '').trim();
+  if (defects && !/^(none|no|n\/a|-)/i.test(defects)) problems.push(defects.slice(0, 80));
+  return { ok: problems.length === 0, why: problems.length ? problems.join('; ') : 'ok' };
 }
 
 async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: string, wmText: string, convoText: string): Promise<string> {
@@ -430,7 +457,9 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const OPEN_RE = /\b(open(ed)?|inside|insert|tray|lid (lifted|off|removed)|contents?|showing the)\b/i;
   const customerWords = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-4).join(' ');
   // Klein needs the two-stage trick for open views; Qwen-Image renders them directly.
-  const wantsOpen = !ref && engine === 'klein' && OPEN_RE.test(desc + ' ' + customerWords);
+  const openRequested = OPEN_RE.test(desc + ' ' + customerWords);
+  const wantsOpen = !ref && engine === 'klein' && openRequested;
+  if (!openRequested && !ref) prompt = `${prompt} The box is fully closed, lid on and flush with the base, no flaps open.`;
   alog(`mockup prompt [${engine}]${ref ? ' (reference: ' + ref.name + ')' : ''}${specialShape ? ' [shape: ' + shapeWord + ']' : ''}${wantsOpen ? ' [two-stage open view]' : ''}: ${prompt.slice(0, 160)}`);
 
   // ── 2. render helpers
@@ -507,7 +536,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   /** Render + QA loop: the reviewer's reason is fed back into the next attempt (works for any shape/scene). */
   const renderChecked = async (text: string, refImg: { name: string; w: number; h: number } | null, attempts: number, qaSummary?: string): Promise<{ bytes: Buffer; ok: boolean }> => {
     let bytes = await renderOnce(text, refImg);
-    let qa = await checkRender(deps, bytes, expectedText, qaSummary ?? text).catch((err) => ({ ok: true, why: `qa skipped: ${(err as Error).message}` }));
+    let qa = await checkRender(deps, bytes, expectedText, qaSummary ?? text, openRequested).catch((err) => ({ ok: true, why: `qa skipped: ${(err as Error).message}` }));
     alog(`mockup QA ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
     let best = { bytes, ok: qa.ok };
     for (let i = 2; !qa.ok && i <= attempts; i++) {
@@ -520,7 +549,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
         if (pos.content?.trim()) fix = pos.content.trim().slice(0, 200);
       } catch { /* keep raw note */ }
       bytes = await renderOnce(`${text}\nCorrection (the previous render was rejected): ${fix}`, refImg);
-      qa = await checkRender(deps, bytes, expectedText, qaSummary ?? text).catch(() => ({ ok: true, why: 'qa skipped' }));
+      qa = await checkRender(deps, bytes, expectedText, qaSummary ?? text, openRequested).catch(() => ({ ok: true, why: 'qa skipped' }));
       alog(`mockup QA attempt ${i} ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
       best = { bytes, ok: qa.ok };
     }
