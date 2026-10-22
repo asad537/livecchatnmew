@@ -393,7 +393,7 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
     { role: 'system', content: 'You are a strict QA checker for packaging mockup renders. Reply with exactly "YES" if everything passes, otherwise "NO: <short reason>".' },
     { role: 'user', content: [
       { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
-      { type: 'text', text: `Requested mockup: ${summary.slice(0, 700)}\n(1) Does the image clearly show that packaging with the right SHAPE and style? Be strict about silhouettes: a heart-shaped box means the box outline itself is a heart (a round or square box with a heart printed on it is NO). For polygon boxes COUNT the sides of the lid/base: triangle 3, pentagon 5, hexagon 6, octagon 8 — a different count fails (an 8-sided box is NOT a hexagon). An open box with inserts must show the inside. Colour and finish must match. Details that do NOT matter and must not fail the check: where the logo sits, lid thickness, flat vs slightly domed or bevelled lid, exact proportions, lighting, background shade. If a lid is shown, it must be a real lid with its own side walls/rim that could fit over the base (a flat sheet or thin panel is NOT a lid and fails), resting on the surface or on the box — a lid floating in mid-air or shown upside down fails. One clean product photo, no distortions or impossible geometry.${textQ}${oneBoxQ} Ignore the watermark at the bottom.` },
+      { type: 'text', text: `Requested mockup: ${summary.slice(0, 700)}\n(1) Does the image clearly show that packaging with the right SHAPE and style? Be strict about silhouettes: a heart-shaped box means the box outline itself is a heart (a round or square box with a heart printed on it is NO). For polygon boxes COUNT the sides of the lid/base: triangle 3, pentagon 5, hexagon 6, octagon 8 — a different count fails (an 8-sided box is NOT a hexagon). An open box with inserts must show the inside. Colour and finish must match. Details that do NOT matter and must not fail the check: where the logo sits, lid thickness, flat vs slightly domed or bevelled lid, exact proportions, lighting, background shade. If a lid is shown, it must be a real lid with its own side walls/rim that could fit over the base (a flat sheet or thin panel is NOT a lid and fails), resting on the surface or on the box — a lid floating in mid-air or shown upside down fails. A CLOSED box must look physically correct: the lid sits flush on the base with the same outline, no gap, no hovering, no mismatched sizes. One clean product photo, no distortions or impossible geometry.${textQ}${oneBoxQ} Ignore the watermark at the bottom.` },
     ] as unknown as string },
   ], false);
   const a = (out.content ?? '').trim();
@@ -421,6 +421,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   if (specialShape) prompt = `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}, with a ${shapeWord}-shaped lid that has its own side walls (a shallow ${shapeWord} tray, not a flat sheet) and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`;
   // The style LoRA was trained on rectangular boxes and pulls unusual silhouettes back to rectangles.
   const engine = (process.env.ALEX_IMAGE_ENGINE || 'klein').toLowerCase() === 'qwen' ? 'qwen' : 'klein';
+  const qwenSteps = Number(process.env.ALEX_QWEN_STEPS || 8) === 4 ? 4 : 8;
   // Style LoRA (trained on Klein) only applies to the Klein engine and rectangular boxes.
   const lora = engine === 'klein' && !specialShape ? deps.config.alex.mockupLora : null;
   if (specialShape) alog(`special shape "${shapeWord}": LoRA off`);
@@ -462,12 +463,12 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
         '1': { class_type: 'UNETLoader', inputs: { unet_name: 'qwen_image_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
         '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_2.5_vl_7b_fp8_scaled.safetensors', type: 'qwen_image', device: 'default' } },
         '3': { class_type: 'VAELoader', inputs: { vae_name: 'qwen_image_vae.safetensors' } },
-        '11': { class_type: 'LoraLoaderModelOnly', inputs: { lora_name: 'Qwen-Image-Lightning-4steps-V2.0-bf16.safetensors', strength_model: 1.0, model: ['1', 0] } },
+        '11': { class_type: 'LoraLoaderModelOnly', inputs: { lora_name: qwenSteps === 8 ? 'Qwen-Image-Lightning-8steps-V2.0-bf16.safetensors' : 'Qwen-Image-Lightning-4steps-V2.0-bf16.safetensors', strength_model: 1.0, model: ['1', 0] } },
         '12': { class_type: 'ModelSamplingAuraFlow', inputs: { shift: 3.1, model: ['11', 0] } },
         '4': { class_type: 'CLIPTextEncode', inputs: { text, clip: ['2', 0] } },
         '5': { class_type: 'CLIPTextEncode', inputs: { text: ' ', clip: ['2', 0] } },
         '6': { class_type: 'EmptySD3LatentImage', inputs: { width: 1152, height: 864, batch_size: 1 } },
-        '8': { class_type: 'KSampler', inputs: { seed, steps: 4, cfg: 1.0, sampler_name: 'euler', scheduler: 'simple', denoise: 1.0, model: ['12', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0] } },
+        '8': { class_type: 'KSampler', inputs: { seed, steps: qwenSteps, cfg: 1.0, sampler_name: 'euler', scheduler: 'simple', denoise: 1.0, model: ['12', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0] } },
         '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['3', 0] } },
         '10': { class_type: 'SaveImage', inputs: { filename_prefix: prefix, images: ['9', 0] } },
       };
