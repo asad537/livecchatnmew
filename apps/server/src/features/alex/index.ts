@@ -453,11 +453,11 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const lora = engine === 'klein' && !specialShape ? deps.config.alex.mockupLora : null;
   if (specialShape) alog(`special shape "${shapeWord}": LoRA off`);
   const withTrigger = (p: string): string => (lora ? `pbxbox ${p.charAt(0).toLowerCase()}${p.slice(1)}` : p);
-  const expectedText = [...prompt.matchAll(/"([^"]{2,40})"/g)].map((m) => m[1]).filter((t) => !/^(pbxbox|studio)/i.test(t));
+  const expectedText = [...prompt.replace(/[“”]/g, '"').matchAll(/"([^"]{2,40})"/g)].map((m) => m[1]).filter((t) => !/^(pbxbox|studio)/i.test(t));
   const OPEN_RE = /\b(open(ed)?|inside|insert|tray|lid (lifted|off|removed)|contents?|showing the)\b/i;
   const customerWords = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-4).join(' ');
   // Klein needs the two-stage trick for open views; Qwen-Image renders them directly.
-  const openRequested = OPEN_RE.test(desc + ' ' + customerWords);
+  const openRequested = OPEN_RE.test(customerWords);
   const wantsOpen = !ref && engine === 'klein' && openRequested;
   if (!openRequested && !ref) prompt = `${prompt} The box is completely closed: lid down and flush with the base, every flap tucked in and closed, nothing lifted or ajar.`;
   alog(`mockup prompt [${engine}]${ref ? ' (reference: ' + ref.name + ')' : ''}${specialShape ? ' [shape: ' + shapeWord + ']' : ''}${wantsOpen ? ' [two-stage open view]' : ''}: ${prompt.slice(0, 160)}`);
@@ -490,9 +490,9 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     if (engine === 'qwen' && !refImg) {
       // Qwen-Image 20B (fp8) + Lightning LoRA: strong at shapes, scenes and printed text.
       // It prints quote characters literally, so pass the brand text bare and spell it out once.
-      const bare = text.replace(/"([^"]{2,40})"/g, '$1');
+      const bare = text.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'");
       const spelled = expectedText.length ? ` The printed brand text must read exactly: ${expectedText.map((t) => `${t} (letters: ${t.split('').join(' ')})`).join('; ')}.` : '';
-      text = bare + spelled;
+      text = bare + spelled + ' Exactly one box in the frame on an empty seamless backdrop, nothing else in the picture.';
       const wq: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
         '1': { class_type: 'UNETLoader', inputs: { unet_name: 'qwen_image_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
         '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_2.5_vl_7b_fp8_scaled.safetensors', type: 'qwen_image', device: 'default' } },
@@ -538,7 +538,8 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     let bytes = await renderOnce(text, refImg);
     let qa = await checkRender(deps, bytes, expectedText, qaSummary ?? text, openRequested).catch((err) => ({ ok: true, why: `qa skipped: ${(err as Error).message}` }));
     alog(`mockup QA ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
-    let best = { bytes, ok: qa.ok };
+    const score = (why: string): number => (why === 'ok' ? 0 : why.split(';').length);
+    let best = { bytes, ok: qa.ok, score: score(qa.why) };
     for (let i = 2; !qa.ok && i <= attempts; i++) {
       let fix = qa.why.replace(/^no:?\s*/i, '').trim();
       try {
@@ -551,9 +552,10 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       bytes = await renderOnce(`${text}\nCorrection (the previous render was rejected): ${fix}`, refImg);
       qa = await checkRender(deps, bytes, expectedText, qaSummary ?? text, openRequested).catch(() => ({ ok: true, why: 'qa skipped' }));
       alog(`mockup QA attempt ${i} ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
-      best = { bytes, ok: qa.ok };
+      if (qa.ok || score(qa.why) < best.score) best = { bytes, ok: qa.ok, score: score(qa.why) };
     }
-    return best;
+    if (!best.ok) alog(`mockup: all attempts failed, sending the best one (${best.score} issue(s))`);
+    return { bytes: best.bytes, ok: best.ok };
   };
 
   // ── 2b. shape reference from the real photo library (any shape we have a photo of)
