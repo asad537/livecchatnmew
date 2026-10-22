@@ -404,11 +404,11 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
   ], false);
   const raw = (out.content ?? '').trim();
   let j: Record<string, unknown> = {};
-  try {
-    j = JSON.parse(raw.replace(/^```(?:json)?\s*|\s*```$/g, '')) as Record<string, unknown>;
-  } catch {
-    const m = raw.match(/\{[\s\S]*\}/);
-    if (m) { try { j = JSON.parse(m[0]) as Record<string, unknown>; } catch { /* ignore */ } }
+  const candidates = [raw.replace(/```(?:json)?/gi, '').trim(), (raw.match(/\{[\s\S]*\}/) ?? [''])[0]];
+  for (const c of candidates) {
+    if (!c) continue;
+    try { j = JSON.parse(c) as Record<string, unknown>; break; } catch { /* try next */ }
+    try { j = JSON.parse(c.replace(/,\s*([}\]])/g, '$1').replace(/\/\/[^\n]*/g, '')) as Record<string, unknown>; break; } catch { /* try next */ }
   }
   if (Object.keys(j).length === 0) return { ok: /^\s*yes/i.test(raw), why: raw.slice(0, 120) };
   const lid = String(j.lid_state ?? 'none');
@@ -459,7 +459,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   // Klein needs the two-stage trick for open views; Qwen-Image renders them directly.
   const openRequested = OPEN_RE.test(customerWords);
   const wantsOpen = !ref && engine === 'klein' && openRequested;
-  if (!openRequested && !ref) prompt = `${prompt} The box is completely closed: lid down and flush with the base, every flap tucked in and closed, nothing lifted or ajar.`;
+  if (!openRequested && !ref) prompt = `${prompt} The box is completely closed: the lid is fully seated on the base so only a thin seam line shows where they meet, every flap tucked in, nothing lifted or ajar.`;
   alog(`mockup prompt [${engine}]${ref ? ' (reference: ' + ref.name + ')' : ''}${specialShape ? ' [shape: ' + shapeWord + ']' : ''}${wantsOpen ? ' [two-stage open view]' : ''}: ${prompt.slice(0, 160)}`);
 
   // ── 2. render helpers
@@ -491,7 +491,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       // Qwen-Image 20B (fp8) + Lightning LoRA: strong at shapes, scenes and printed text.
       // It prints quote characters literally, so pass the brand text bare and spell it out once.
       const bare = text.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'");
-      const spelled = expectedText.length ? ` The printed brand text must read exactly: ${expectedText.map((t) => `${t} (letters: ${t.split('').join(' ')})`).join('; ')}.` : '';
+      const spelled = expectedText.length ? ` The only printed text is the brand name ${expectedText.join(' and ')}, spelled exactly ${expectedText.map((t) => t.split('').join('-')).join(' and ')}, with no quotation marks, brackets or other characters around it.` : '';
       text = bare + spelled + ' Exactly one box in the frame on an empty seamless backdrop, nothing else in the picture.';
       const wq: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
         '1': { class_type: 'UNETLoader', inputs: { unet_name: 'qwen_image_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
