@@ -1017,6 +1017,7 @@ function buildSystem(deps: AppDeps, name: string, website: WebsiteRow, visitor: 
     `You are ${name}, a human-sounding live chat sales & support agent for "${website.name}" (custom printed packaging). Never say you are an AI unless directly asked; then say you are ${website.name}'s virtual assistant ${name}.`,
     `Reply like the real agents in the examples: SHORT (one or two plain sentences, at most 25 words in total; no adjectives like luxurious/elegant, no recap of what they said), friendly, confident, exactly ONE question per message (never "Also, ..." with a second question). Default language English; mirror the customer if they clearly write Urdu/Roman Urdu or another language.`,
     `Policies (minimum order, lead times, prices, shipping): if the website content and the FAQ disagree, the WEBSITE CONTENT wins — e.g. if the site says "no minimum", a single box can be ordered (at a higher unit price); never contradict the customer's own website. ` +
+    `Never repeat the opening question ("are you looking for custom printed boxes?") once the customer has said what they need: answer their need. Keep the product type they named: a bag stays a bag, a pouch a pouch, a label a label; never call it a box. "Shopping bag" or "bag" means a paper bag: if the website content lists paper bags, offer them; if not, say our focus is boxes and the team can confirm paper bags, never assume plastic. MINIMUM ORDER: if the website content says no minimum / zero minimum / low MOQ, there is NO minimum: one piece is possible at a higher unit price, larger runs are cheaper per unit; never state a minimum of 100 or any number. If the customer corrects you or complains ("you said box, I asked for a bag"), apologise in a few words and continue correctly; do not send a photo as an answer to a complaint. ` +
     `FIRST understand what the customer actually said and answer THAT. If they say they do not want boxes, are only asking a question, are unsure, joke, or change topic, respond to it naturally (ask what they are looking for, answer the question, offer options). Never push "size and quantity" unless they have told you what they want to pack or order. Never ask a question you already asked in this chat; if they answered "yes" to your opener, move on to what they want to pack and the details. Every reply ends with the next useful step: a question about the missing detail (type, size, quantity, printing, deadline, contact) or what happens next; never just repeat their order back. When the customer is closing (thanks, that's all, bye), close warmly in one line, invite them to come back or share an email for a quote, and never pressure them for details. If they ask about something we do not make (poly/plastic bags, glass jars...), say so and suggest what we do make.`,
     `Goal of every chat: understand what they need (box type, dimensions L×W×H, quantity, material, printing/finish, deadline), share photos or a mockup when it helps them decide, collect their name + email/phone for the estimate, then CALL the handover tool (do not just say you will) so the team sends the exact quote. Never invent prices, lead times or policies that are not in the FAQ/website content; say the team will confirm.`,
     `When the customer asks to SEE something (sample, picture, example, mockup, render, visual, "show me"), call send_photo or make_mockup in that same turn before asking anything else; a mockup request with a description is enough to call make_mockup right away. Never ask permission ("would you like me to generate it?") and never say "I can/will update the mockup": just call make_mockup in that same turn, also for every change the customer asks on a mockup already sent (different text, colour, size, logo). After a photo or mockup was sent, reply in at most TWO short sentences: one line about it, then one question. ` +
@@ -1096,9 +1097,9 @@ async function styledReply(deps: AppDeps, botName: string, website: WebsiteRow, 
 
 // ─── Proactive greeting (visitor just arrived) ───────────────
 const GREETINGS = [
-  'Hi there! 👋 {name} here from {site}. Are you looking for custom printed boxes?',
+  'Hi there! {name} here from {site}. Are you looking for custom printed boxes?',
   'Hello! This is {name} from {site}. Looking for custom packaging? I can help with sizes, materials and a quick quote.',
-  'Hi! {name} from {site} here 😊 Are you looking for custom printed boxes? Happy to help with sizes, materials and pricing.',
+  'Hi! {name} from {site} here. Are you looking for custom printed boxes? Happy to help with sizes, materials and pricing.',
   'Welcome to {site}! I am {name}. Need custom boxes or packaging? Tell me what you are packing and I will guide you.',
 ];
 
@@ -1225,16 +1226,23 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
             const revisionAsk = hadMockup && /\b(instead( of)?|change|replace|update|modify|edit|make (it|the|them)|put|print|add|remove|swap|redo|regenerate|try again|another (one|try|version)|new mockup|different (colou?r|text|font|logo|size|shape|finish)|in (gold|silver|black|white|red|blue|green|pink|matte|glossy))\b/i.test(lu);
             const yesToMockup = /^(yes|yeah|yep|yup|sure|ok(ay)?|please|go ahead|do it|generate|make it)\b/i.test(lu.trim()) && /\b(mock-?up|visual|render|concept)\b/i.test(prevBot) && /\?/.test(prevBot);
             const promised = /\b(i('ll| will| can)|let me|i am going to|i'm going to)\b[^.!?]*\b(generate|create|update|make|prepare|render|work on)\b[^.!?]*\b(mock-?up|visual|render|concept|design)\b/i.test(out.content ?? '');
-            const wantsMockup = /\b(mock-?up|concept|render|3d|visuali[sz]e|design (it|this|one)|how (it|this) (would|will) look)\b/i.test(lu) || revisionAsk || yesToMockup || promised;
+            const claimsMockup = /\b(here is|here's|here are|attached|sending)\b[^.!?]*\b(mock-?up|render|concept|visual)\b/i.test(out.content ?? '');
+            const complaintEarly = /\b(you (are|were|said|sent|keep|gave|just)|asked for|i asked|i said|not what|wrong|didn'?t|don'?t|why|instead of)\b/i.test(lu);
+            const wantsMockup = !complaintEarly && (/\b(mock-?up|concept|render|3d|visuali[sz]e|design (it|this|one)|how (it|this) (would|will) look)\b/i.test(lu) || revisionAsk || yesToMockup || promised || claimsMockup);
             const hadPhoto = convo.some((m) => m.role === 'assistant' && typeof (m as { content: unknown }).content === 'string' && /photo was sent to the customer here:/.test((m as { content: string }).content));
             const PRODUCT_RE = /\b(box|boxes|mailer|mailers|pouch|pouches|sleeve|sleeves|label|labels|bag|bags|carton|cartons|tube|tubes|tray|trays|insert|inserts|packaging|display)\b/i;
             const shortLu = lu.trim().split(/\s+/).length <= 10;
             const claimsPhoto = /\b(here is|here's|here are|attached|sending|i've sent|i have sent|sent you)\b[^.!?]*\b(photo|picture|image|pic)s?\b/i.test(out.content ?? '');
-            const wantsPhoto = (/\b(photo|picture|pic|image|example|sample)s?\b/i.test(lu) && (/\b(show|see|have|send|share|look|of)\b/i.test(lu) || hadPhoto))
+            const complaint = /\b(you (are|were|said|sent|keep|gave|just)|asked for|i asked|i said|not what|wrong|didn'?t|don'?t|why|instead of)\b/i.test(lu);
+            const wantsPhoto = !complaint && ((/\b(photo|picture|pic|image|example|sample)s?\b/i.test(lu) && (/\b(show|see|have|send|share|look|of)\b/i.test(lu) || hadPhoto))
               || /\bshow me\b/i.test(lu)
               || (hadPhoto && shortLu && PRODUCT_RE.test(lu) && !wantsMockup)
-              || claimsPhoto;
-            if (wantsMockup || wantsPhoto) {
+              || claimsPhoto);
+            if (complaintEarly && (claimsMockup || claimsPhoto)) {
+              // The customer is correcting us and the draft pretends to send something: answer honestly instead.
+              alog('complaint + false send claim: re-asking without tools');
+              out = await chat(deps, [...messages, { role: 'user', content: '[Nothing was sent. Apologise in a few words, answer the customer directly, and do not claim to send or show anything.]' }], false);
+            } else if (wantsMockup || wantsPhoto) {
               alog(`forcing tool ${wantsMockup ? 'make_mockup' : 'send_photo'}${revisionAsk ? ' (revision)' : ''}${yesToMockup ? ' (yes)' : ''}${promised ? ' (promised)' : ''}${claimsPhoto ? ' (claimed photo)' : ''}`);
               out = await chat(deps, messages, true, undefined, wantsMockup ? 'make_mockup' : 'send_photo');
             }

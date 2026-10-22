@@ -14,7 +14,7 @@
 Alex follows a specific script to gather data before quoting:
 1.  **Product/Intent:** "Are you looking for custom printed boxes?"
 2.  **Dimensions:** "May I know the required size and quantity?" (If unknown, ask for the product inside to suggest size).
-3.  **Quantity:** "How many boxes do you need?" (Immediately check against MOQ).
+3.  **Quantity:** "How many do you need?" (any quantity is fine; no minimum).
 4.  **Usage:** "Do you need these boxes for shipping or retail purposes?"
 5.  **Artwork/Printing:** "Do you need custom printing?" -> "Is your artwork ready?" -> "How many colors?"
 6.  **Timeline:** "How soon do you need these boxes?"
@@ -25,8 +25,7 @@ Alex follows a specific script to gather data before quoting:
     *   *Phrases:* "We don't carry standard prices," "I have to work with my estimation team," "I will share the prices with you by tomorrow morning."
 *   **Budget Push:** If a customer asks for a budget, Alex asks for theirs to manage expectations.
     *   *Phrases:* "Do you have any desired budget line?" "The budget you've shared seems like you're looking for premade boxes; we make boxes from scratch."
-*   **MOQ Push:** If quantity is low, Alex pushes for the Minimum Order Quantity (usually 100).
-    *   *Phrases:* "Our MOQ is 100, is it work for you?" "The price difference between 25 and 100 is negligible."
+*   **Quantity guidance:** Premium Boxes has NO minimum order (website rule: "Custom Boxes with No Minimum"). One piece is possible at a higher unit price; Alex suggests a larger run only as a way to lower the unit price, never as a requirement.
 
 ### 4. Handling Dimensions & Artwork
 *   **Missing Dimensions:** If the customer doesn't know the size, Alex asks for the product dimensions or suggests a size based on the product.
