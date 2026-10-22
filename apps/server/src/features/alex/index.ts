@@ -325,11 +325,11 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
 const ENHANCER_SYSTEM =
   'You write prompts for an image model that renders packaging mockups for a custom packaging company. You get the recent chat and the request; work out from the CHAT what box the customer actually wants and write ONE English prompt of 90-130 words. Rules: ' +
   '(1) The product decides the box: say the exact style and shape and describe its real geometry. Mailer box = corrugated roll-end tuck-front, wide and shallow, hinged lid; rigid box = two-piece lid and base, thick walls, matte wrapped paper; tuck-end = slim folding carton; pouch = stand-up pouch with gusset; ' +
-  'heart-shaped / round / hexagon / tube boxes keep that silhouette (e.g. "a heart-shaped two-piece rigid box with a domed heart lid"); chocolate, candle, perfume, cosmetics, bakery etc. imply the matching box type and, if asked, inserts with the product visible. ' +
+  'heart-shaped / round / hexagon / tube boxes keep that silhouette (e.g. "a heart-shaped two-piece rigid box: heart-shaped base tray with straight walls and a matching flat heart-shaped lid"); chocolate, candle, perfume, cosmetics, bakery etc. imply the matching box type and, if asked, inserts with the product visible. ' +
   'If the customer gave dimensions, express the proportions in words (low and flat / tall and narrow / cube-like). NEVER reuse any number or example from these instructions. ' +
   '(2) Printed text: ONLY the brand/logo text the customer actually gave, in double quotes, on the lid top and front panel, centered, as a bold flat logo. If they gave none, write "a small generic logo mark, no readable text". Never print slogans, taglines, website names or anything from the company side. ' +
   '(3) Colours, material and finish exactly as requested; if not stated, choose what suits the product (e.g. deep red matte rigid for a Valentine chocolate box), not plain white by default. ' +
-  '(3b) If inserts, trays or the product inside must be shown, describe the lid lifted off and placed beside or behind the base, the insert and products neatly visible inside, the box silhouette unchanged and fully recognisable. ' +
+  '(3b) If inserts, trays or the product inside must be shown, describe the lid of that SAME box lifted off and leaning beside or behind its base, the insert and products neatly visible inside, the silhouette unchanged and fully recognisable. Exactly ONE box in the picture, never a second smaller box. ' +
   '(4) Scene: one box on a seamless light grey studio backdrop, 3/4 angle slightly from above, soft diffused studio light, soft shadow, 85mm lens, photorealistic, sharp, no people, no hands, no extra props, no other boxes. ' +
   'Output only the prompt.';
 
@@ -390,7 +390,7 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
     { role: 'system', content: 'You are a strict QA checker for packaging mockup renders. Reply with exactly "YES" if everything passes, otherwise "NO: <short reason>".' },
     { role: 'user', content: [
       { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
-      { type: 'text', text: `Requested mockup: ${summary.slice(0, 500)}\n(1) Does the image clearly show that packaging with the right shape/style (e.g. a heart-shaped box must look heart-shaped, an open box with inserts must show the inside), colour and finish, as one clean product photo with no distortions or impossible geometry?${textQ} Ignore the watermark at the bottom.` },
+      { type: 'text', text: `Requested mockup: ${summary.slice(0, 700)}\n(1) Does the image clearly show that packaging with the right SHAPE and style? Be strict about silhouettes: a heart-shaped box means the box outline itself is a heart (a round or square box with a heart printed on it is NO); same for round, hexagon, tube etc. An open box with inserts must show the inside. Colour and finish must match. One clean product photo, no distortions or impossible geometry.${textQ} Ignore the watermark at the bottom.` },
     ] as unknown as string },
   ], false);
   const a = (out.content ?? '').trim();
@@ -412,8 +412,16 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   } else {
     prompt = await enhanceMockupPrompt(deps, desc, convoText);
   }
-  const lora = deps.config.alex.mockupLora;
+  const SHAPE_RE = /\b(heart|round|circular|circle|hexagon|hexagonal|octagon|tube|cylinder|cylindrical|triangle|triangular|pillow|oval|star)[ -]?(shaped|box|lid|silhouette)?\b/i;
+  const specialShape = SHAPE_RE.test(desc) || SHAPE_RE.test(prompt) || SHAPE_RE.test(convoText.slice(-600));
+  const shapeWord = (desc.match(SHAPE_RE) ?? prompt.match(SHAPE_RE) ?? convoText.slice(-600).match(SHAPE_RE))?.[1]?.toLowerCase();
+  if (specialShape && shapeWord && !ref) {
+    prompt = `The ENTIRE box is ${shapeWord}-shaped: its outline seen from above is a ${shapeWord} silhouette (lid and base both ${shapeWord}-shaped), NOT a round, square or rectangular box with a ${shapeWord} printed on it. ${prompt}`;
+  }
+  // The style LoRA was trained on rectangular boxes and fights unusual silhouettes.
+  const lora = specialShape ? null : deps.config.alex.mockupLora;
   if (lora) prompt = ref ? `pbxbox ${prompt.charAt(0).toLowerCase()}${prompt.slice(1)}` : `pbxbox photo of ${prompt.replace(/^(a |an )?(photo(graph)? of )?/i, '')}`;
+  if (specialShape) alog(`special shape "${shapeWord}": LoRA off`);
   alog(`mockup prompt${ref ? ' (reference: ' + ref.name + ')' : ''}: ${prompt.slice(0, 200)}`);
   // Upload the reference to ComfyUI and size the latent to it.
   let inputName: string | null = null;
@@ -475,16 +483,16 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   let bytes = await runComfy(base, workflow, prefix);
   // Render QA (as in AI Studio): wrong shape/scene or misspelled brand text → one retry with a new seed.
   try {
-    const qa = await checkRender(deps, bytes, expectedText, desc);
+    let qa = await checkRender(deps, bytes, expectedText, prompt);
     alog(`mockup QA ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
-    if (!qa.ok) {
+    for (let attempt = 2; !qa.ok && attempt <= 3; attempt++) {
       (workflow['8'].inputs as { seed: number }).seed = Math.floor(Math.random() * 999_999_999) + 1;
-      const prefix2 = `alex-${Math.random().toString(16).slice(2, 10)}`;
-      (workflow['10'].inputs as { filename_prefix: string }).filename_prefix = prefix2;
-      const bytes2 = await runComfy(base, workflow, prefix2);
-      const qa2 = await checkRender(deps, bytes2, expectedText, desc);
-      alog(`mockup QA retry ${qa2.ok ? 'ok' : 'FAILED: ' + qa2.why}`);
-      bytes = bytes2;
+      const prefixN = `alex-${Math.random().toString(16).slice(2, 10)}`;
+      (workflow['10'].inputs as { filename_prefix: string }).filename_prefix = prefixN;
+      const bytesN = await runComfy(base, workflow, prefixN);
+      qa = await checkRender(deps, bytesN, expectedText, prompt);
+      alog(`mockup QA attempt ${attempt} ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
+      bytes = bytesN;
     }
   } catch (err) {
     alog(`mockup QA skipped: ${(err as Error).message}`);
@@ -942,6 +950,8 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
         });
         if (kept.length < parts.length) { reply = kept.join('').replace(/\b(Also|Additionally|And),?\s*$/i, '').trim(); alog('trimmed extra questions'); }
       }
+      // Agents don't use emojis in replies.
+      reply = reply.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{1F900}-\u{1F9FF}]/gu, '').replace(/[ \t]{2,}/g, ' ').replace(/\s+([.!?,])/g, '$1');
       // Agents write tight messages: no blank lines between sentences/paragraphs.
       reply = reply.replace(/[ \t]+\n/g, '\n').replace(/\n{2,}/g, '\n').trim();
 
