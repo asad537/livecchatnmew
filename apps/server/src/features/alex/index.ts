@@ -358,12 +358,12 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   let prompt: string;
   if (ref) {
     // Image-to-image: build the mockup on the customer's own box/design.
-    prompt = `Professional studio product photo of this exact packaging. Keep the same box shape, proportions, colours, logo and printed design as in the reference image; ${desc}. Seamless light grey studio backdrop, 3/4 angle, soft studio light, photorealistic, no people, no hands.`;
+    prompt = `Studio product photo of the packaging shown in the reference image: keep its box style, shape, proportions, logo and printed design. Apply these changes requested by the customer exactly (colours, material, finish, inserts, text): ${desc}. Seamless light grey studio backdrop, 3/4 angle, soft studio light, photorealistic, no people, no hands.`;
   } else {
     prompt = await enhanceMockupPrompt(deps, desc);
   }
   const lora = deps.config.alex.mockupLora;
-  if (lora) prompt = `pbxbox photo of ${prompt.replace(/^(a |an )?(photo(graph)? of )?/i, '')}`;
+  if (lora) prompt = ref ? `pbxbox ${prompt.charAt(0).toLowerCase()}${prompt.slice(1)}` : `pbxbox photo of ${prompt.replace(/^(a |an )?(photo(graph)? of )?/i, '')}`;
   alog(`mockup prompt${ref ? ' (reference: ' + ref.name + ')' : ''}: ${prompt.slice(0, 200)}`);
   // Upload the reference to ComfyUI and size the latent to it.
   let inputName: string | null = null;
@@ -709,7 +709,15 @@ async function voiceSample(deps: AppDeps, botName: string, website: WebsiteRow, 
 // ─── Entry point ─────────────────────────────────────────────
 
 /** Fire-and-forget: call after every VISITOR message. */
-export function alexTurn(deps: AppDeps, conversationId: string): void {
+/** When the pod fails, skip Alex for a while and let the legacy greeter answer. */
+let alexDownUntil = 0;
+const isPodError = (err: unknown): boolean => /fetch failed|ECONN|ETIMEDOUT|timeout|aborted|LLM (404|502|503|504)/i.test((err as Error)?.message ?? '');
+
+export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () => void): void {
+  if (Date.now() < alexDownUntil && fallback) {
+    fallback();
+    return;
+  }
   if (inFlight.has(conversationId)) {
     pendingTurn.add(conversationId);
     return;
@@ -896,9 +904,15 @@ export function alexTurn(deps: AppDeps, conversationId: string): void {
       if (!handedOver) await maybeAutoHandover(deps, conversationId, convo, reply);
     } catch (err) {
       alog(`turn FAILED: ${(err as Error).stack ?? (err as Error).message}`);
+      if (isPodError(err) && fallback) {
+        alexDownUntil = Date.now() + 60_000;
+        alog('pod unreachable → legacy greeter fallback for 60 s');
+        inFlight.delete(conversationId);
+        fallback();
+      }
     } finally {
       inFlight.delete(conversationId);
-      if (pendingTurn.delete(conversationId)) alexTurn(deps, conversationId);
+      if (pendingTurn.delete(conversationId)) alexTurn(deps, conversationId, fallback);
     }
   })();
 }

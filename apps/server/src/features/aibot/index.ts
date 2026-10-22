@@ -61,10 +61,17 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 export function maybeBotReply(deps: AppDeps, conversationId: string): void {
   if (!deps.config.aiGreeter) return;
   // Alex (self-hosted agent) takes over the whole bot flow when configured.
+  // If the GPU pod is unreachable, Alex calls back into this legacy greeter
+  // (Groq/Gemini/builtin) so visitors never sit in silence.
   if (deps.config.alex.baseUrl) {
-    alexTurn(deps, conversationId);
+    alexTurn(deps, conversationId, () => legacyBotReply(deps, conversationId));
     return;
   }
+  legacyBotReply(deps, conversationId);
+}
+
+/** The original queue greeter (cloud API or rule-based replies). */
+export function legacyBotReply(deps: AppDeps, conversationId: string): void {
   if (inFlight.has(conversationId)) return;
   inFlight.add(conversationId);
 
