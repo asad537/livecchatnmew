@@ -421,7 +421,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   if (specialShape) prompt = `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}, with a ${shapeWord}-shaped lid that has its own side walls (a shallow ${shapeWord} tray, not a flat sheet) and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`;
   // The style LoRA was trained on rectangular boxes and pulls unusual silhouettes back to rectangles.
   const engine = (process.env.ALEX_IMAGE_ENGINE || 'klein').toLowerCase() === 'qwen' ? 'qwen' : 'klein';
-  const qwenSteps = Number(process.env.ALEX_QWEN_STEPS || 8) === 4 ? 4 : 8;
+  const qwenSteps = Number(process.env.ALEX_QWEN_STEPS || 4) === 8 ? 8 : 4;
   // Style LoRA (trained on Klein) only applies to the Klein engine and rectangular boxes.
   const lora = engine === 'klein' && !specialShape ? deps.config.alex.mockupLora : null;
   if (specialShape) alog(`special shape "${shapeWord}": LoRA off`);
@@ -454,11 +454,16 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       return null;
     }
   };
-  const renderOnce = async (text: string, refImg: { name: string; w: number; h: number } | null): Promise<Buffer> => {
+  const renderOnce = async (textIn: string, refImg: { name: string; w: number; h: number } | null): Promise<Buffer> => {
+    let text = textIn;
     const prefix = `alex-${Math.random().toString(16).slice(2, 10)}`;
     const seed = Math.floor(Math.random() * 999_999_999) + 1;
     if (engine === 'qwen' && !refImg) {
-      // Qwen-Image 20B (fp8) + Lightning 4-step LoRA: strong at shapes, scenes and printed text.
+      // Qwen-Image 20B (fp8) + Lightning LoRA: strong at shapes, scenes and printed text.
+      // It prints quote characters literally, so pass the brand text bare and spell it out once.
+      const bare = text.replace(/"([^"]{2,40})"/g, '$1');
+      const spelled = expectedText.length ? ` The printed brand text must read exactly: ${expectedText.map((t) => `${t} (letters: ${t.split('').join(' ')})`).join('; ')}.` : '';
+      text = bare + spelled;
       const wq: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
         '1': { class_type: 'UNETLoader', inputs: { unet_name: 'qwen_image_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
         '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_2.5_vl_7b_fp8_scaled.safetensors', type: 'qwen_image', device: 'default' } },
