@@ -514,7 +514,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     const stage1 = await renderChecked(withTrigger(closedPrompt), null, 3);
     // Stage 2: open the same box (image-to-image keeps shape, colours and logo).
     const refImg = await uploadRef(stage1.bytes, 'image/png');
-    const openPrompt = `Same packaging as in the reference image, identical shape, colours, finish and logo. Now the lid is lifted off and leans beside the base, showing the inside: ${desc}. One box only, studio backdrop, photorealistic.`;
+    const openPrompt = `Same packaging as in the reference image, identical shape, colours, finish and logo. Now its ${shapeWord ? shapeWord + '-shaped ' : ''}lid is lifted off and leans beside the ${shapeWord ? shapeWord + '-shaped ' : ''}base, showing the inside: ${desc}. One box only, studio backdrop, photorealistic.`;
     const stage2 = refImg ? await renderChecked(openPrompt, refImg, 2, `${shapeWord ? `A ${shapeWord}-shaped box (base and lid both ${shapeWord}-shaped). ` : ''}${openPrompt}`) : { bytes: stage1.bytes, ok: false };
     if (stage2.ok) bytes = stage2.bytes;
     else { bytes = stage1.bytes; note = ' (the open view did not render cleanly, so the closed box was sent)'; }
