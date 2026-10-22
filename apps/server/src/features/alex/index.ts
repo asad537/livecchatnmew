@@ -395,8 +395,8 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
         `"silhouette_ok": true/false — the box outline matches the requested shape (heart = heart outline; polygons: count the sides, hexagon 6, octagon 8; mailer/rigid = rectangular). Construction subtype, flute texture and closure style do NOT matter.\n` +
         `"colour_ok": true/false — main colour/finish as requested.\n` +
         `"text_ok": true/false/null — ${expectedText.length ? `the printed brand text reads exactly ${expectedText.map((t) => `"${t}"`).join(' and ')} (letter case/font do not matter; wrong, missing or extra letters = false)` : 'null if no brand text was requested; false if random readable or garbled text appears'}.\n` +
-        `"boxes": number of separate boxes visible (a lid counts with its box).\n` +
-        `"lids": number of lids visible.\n` +
+        `"boxes": number of separate boxes (base trays) visible. A detached lid lying beside its base is part of the SAME box, not a second box — even if the lid has side walls.\n` +
+        `"lids": number of lids visible (one detached lid beside one base = 1 lid, 1 box).\n` +
         `"lid_state": one of "closed_flush" (lid on, fits the base, no gap), "closed_ajar" (lid on but partly open/tilted or a flap open), "off_resting" (lid removed and resting on the table or leaning on the box, top face up), "floating" (lid in mid-air / not touching anything), "flat_sheet" (the lid is a flat panel with no side walls), "none".\n` +
         `"defects": short note on impossible geometry, duplicated parts, or none.\n` +
         `Ignore the website watermark at the bottom.` },
@@ -459,7 +459,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   // Klein needs the two-stage trick for open views; Qwen-Image renders them directly.
   const openRequested = OPEN_RE.test(desc + ' ' + customerWords);
   const wantsOpen = !ref && engine === 'klein' && openRequested;
-  if (!openRequested && !ref) prompt = `${prompt} The box is fully closed, lid on and flush with the base, no flaps open.`;
+  if (!openRequested && !ref) prompt = `${prompt} The box is completely closed: lid down and flush with the base, every flap tucked in and closed, nothing lifted or ajar.`;
   alog(`mockup prompt [${engine}]${ref ? ' (reference: ' + ref.name + ')' : ''}${specialShape ? ' [shape: ' + shapeWord + ']' : ''}${wantsOpen ? ' [two-stage open view]' : ''}: ${prompt.slice(0, 160)}`);
 
   // ── 2. render helpers
