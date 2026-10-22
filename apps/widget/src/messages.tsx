@@ -138,6 +138,8 @@ export function FileCard({ m, server, token }: { m: LocalMessage; server: string
   if (!file) return <div class="lc-file">{m.body || 'File'}</div>;
   const href = file.downloadUrl ? `${server}${file.downloadUrl}?token=${encodeURIComponent(token)}` : null;
   const isImage = /^image\//i.test(file.mime || '');
+  // Until the visitor token is known the download URL would 403: show a placeholder instead of a broken picture.
+  if (!token && file.downloadUrl) return <div class="lc-file">{file.originalName}</div>;
   const isVideo = /^video\//i.test(file.mime || '');
 
   if (href && file.scanStatus === 'CLEAN' && isImage) {
