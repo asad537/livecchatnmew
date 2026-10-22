@@ -961,8 +961,11 @@ async function runTool(deps: AppDeps, conversationId: string, call: ToolCall, la
         return await sendPhoto(deps, conversationId, String(args.query ?? ''), wmText);
       case 'make_mockup':
         return await makeMockup(deps, conversationId, String(args.prompt ?? ''), wmText, convoText);
-      case 'handover':
+      case 'handover': {
+        const customerText = convoText.split('\n').filter((l) => l.startsWith('Customer:')).join(' ') + ' ' + lastVisitorText;
+        if (!CONTACT_RE.test(customerText)) return 'Not handed over yet: the customer has not shared an email or phone number. Ask for their name and email (or phone) first; the handover happens once you have them.';
         return await handover(deps, conversationId, String(args.reason ?? 'other'), String(args.summary ?? ''));
+      }
       default:
         return `Unknown tool ${call.function.name}`;
     }
@@ -1024,6 +1027,9 @@ function buildSystem(deps: AppDeps, name: string, website: WebsiteRow, visitor: 
     `Reply like the real agents in the examples: SHORT (one or two plain sentences, at most 25 words in total; no adjectives like luxurious/elegant, no recap of what they said), friendly, confident, exactly ONE question per message (never "Also, ..." with a second question). Default language English; mirror the customer if they clearly write Urdu/Roman Urdu or another language.`,
     `Policies (minimum order, lead times, prices, shipping): if the website content and the FAQ disagree, the WEBSITE CONTENT wins — e.g. if the site says "no minimum", a single box can be ordered (at a higher unit price); never contradict the customer's own website. ` +
     `Never repeat the opening question ("are you looking for custom printed boxes?") once the customer has said what they need: answer their need. Keep the product type they named: a bag stays a bag, a pouch a pouch, a label a label; never call it a box. "Shopping bag" or "bag" means a paper bag: if the website content lists paper bags, offer them; if not, say our focus is boxes and the team can confirm paper bags, never assume plastic. MINIMUM ORDER: if the website content says no minimum / zero minimum / low MOQ, there is NO minimum: one piece is possible at a higher unit price, larger runs are cheaper per unit; never state a minimum of 100 or any number. If the customer corrects you or complains ("you said box, I asked for a bag"), apologise in a few words and continue correctly; do not send a photo as an answer to a complaint. ` +
+    `If your greeting already asked whether they need boxes and they only say hi/hello, do not repeat that question: greet back in a few words and ask what they are packing. Make or update a mockup ONLY when the customer asks to see something or asks for a visible change (text, colour, logo, shape, window); a change of material, stock, quantity, size or deadline is confirmed in words, not re-rendered. If they ask you to "share a design from your side", point to the mockup you already sent or make one with make_mockup. ` +
+    `There is no catalog or price list (everything is made to order): if asked for a catalog, say so in a few words and offer photos of similar boxes (send_photo) or a mockup. If the customer does not know the size, ask what they will pack and its dimensions, or suggest a typical size for that product. ` +
+    `Qualification order: first WHAT they pack (the product), then box type, size, quantity, material/printing, deadline, then name + email/phone. If they answer "yes" to the opener, ask what product they are packing, never size/quantity first. Never re-ask a detail already given in this chat (sizes, quantities, printing, deadline, brand name): confirm it and move to the next missing one. You can ALWAYS create an AI mockup with make_mockup, also when the customer has no artwork or says "share a design from your side": never say you cannot share or make one. CMYK, Pantone, finish and stock are production details, not visible changes: explain them (CMYK = full-colour printing, the mockup already shows full colour) instead of claiming you updated the mockup. When asked about details of a gallery photo you sent (stock, size, price), say it is a sample from our gallery and give the typical options; do not invent specifics. Collect name + email (or phone) BEFORE handing over: if the customer says "send the quote" without contact details, ask for them first. ` +
     `FIRST understand what the customer actually said and answer THAT. If they say they do not want boxes, are only asking a question, are unsure, joke, or change topic, respond to it naturally (ask what they are looking for, answer the question, offer options). Never push "size and quantity" unless they have told you what they want to pack or order. Never ask a question you already asked in this chat; if they answered "yes" to your opener, move on to what they want to pack and the details. Every reply ends with the next useful step: a question about the missing detail (type, size, quantity, printing, deadline, contact) or what happens next; never just repeat their order back. When the customer is closing (thanks, that's all, bye), close warmly in one line, invite them to come back or share an email for a quote, and never pressure them for details. If they ask about something we do not make (poly/plastic bags, glass jars...), say so and suggest what we do make.`,
     `Goal of every chat: understand what they need (box type, dimensions L×W×H, quantity, material, printing/finish, deadline), share photos or a mockup when it helps them decide, collect their name + email/phone for the estimate, then CALL the handover tool (do not just say you will) so the team sends the exact quote. Never invent prices, lead times or policies that are not in the FAQ/website content; say the team will confirm.`,
     `When the customer asks to SEE something (sample, picture, example, mockup, render, visual, "show me"), call send_photo or make_mockup in that same turn before asking anything else; a mockup request with a description is enough to call make_mockup right away. Never ask permission ("would you like me to generate it?") and never say "I can/will update the mockup": just call make_mockup in that same turn, also for every change the customer asks on a mockup already sent (different text, colour, size, logo). After a photo or mockup was sent, reply in at most TWO short sentences: one line about it, then one question. ` +
@@ -1187,6 +1193,27 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       history.reverse();
       const convo = historyToMessages(history);
       if (convo.length === 0) return;
+      // A bare "hi" after our greeting already asked the opener: greet back and ask what they pack (no LLM, no repeat).
+      {
+        const lastRow = history[history.length - 1];
+        const botBefore = history.some((m) => m.sender_type === 'BOT' && m !== lastRow);
+        if (lastRow?.sender_type === 'VISITOR' && lastRow.kind === 'TEXT' && botBefore && /^(hi+|hello+|hey+|hii+|hy|salam|assalam[\w ]*|good (morning|afternoon|evening))[.!\s]*$/i.test((lastRow.body ?? '').trim())) {
+          const lines = ['Hi! What are you looking to pack? I can help with sizes, materials and a quick quote.', 'Hello! Tell me what product you are packing and I will guide you.'];
+          const line = lines[Math.abs(Number(BigInt.asUintN(32, BigInt('0x' + conversationId.replace(/-/g, '').slice(0, 8))))) % lines.length];
+          await postMessage(deps, { conversationId, senderType: 'BOT', body: line });
+          alog('bare hi after greeting: fixed reply');
+          return;
+        }
+      }
+      // "yes plz" / "ok waiting" typed while a mockup was rendering, or right after it arrived, is an acknowledgement: reply without tools.
+      let ackAfterMockup = false;
+      {
+        const lastRow = history[history.length - 1];
+        const prevBotRow = [...history].reverse().find((m) => m.sender_type === 'BOT');
+        const ack = lastRow?.sender_type === 'VISITOR' && lastRow.kind === 'TEXT' && /^(yes|yeah|yep|yup|ok(ay)?|sure|fine|great|nice|good|cool|thanks?|thank you|please|plz|yes (please|plz)|ok(ay)? (waiting|thanks)|waiting|go ahead|do it|k)[.!\s]*$/i.test((lastRow.body ?? '').trim());
+        const recentMockup = Boolean(prevBotRow) && ((prevBotRow!.kind === 'FILE' && /mockup/i.test(prevBotRow!.body ?? '')) || MOCKUP_WAIT_MSGS.includes(prevBotRow!.body ?? '')) && Date.now() - new Date(prevBotRow!.created_at).getTime() < 180_000;
+        if (ack && recentMockup) { ackAfterMockup = true; alog('acknowledgement right after a mockup: tools off for this turn'); }
+      }
       // Attach the customer's latest uploaded image (last 4 messages) so the big model can look at it.
       const visionConvo: ChatMsg[] = convo.map((m) => ({ ...m })) as ChatMsg[];
       const recentFile = [...history].reverse().slice(0, 4).find((m) => m.sender_type === 'VISITOR' && m.kind === 'FILE' && m.file_id);
@@ -1222,15 +1249,15 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       try {
         for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
           const t0 = Date.now();
-          let out = await chat(deps, messages, round < MAX_TOOL_ROUNDS);
-          if (round === 0 && (!out.tool_calls || out.tool_calls.length === 0)) {
+          let out = await chat(deps, messages, round < MAX_TOOL_ROUNDS && !ackAfterMockup);
+          if (round === 0 && !ackAfterMockup && (!out.tool_calls || out.tool_calls.length === 0)) {
             const lastUserMsg = (([...convo].reverse().find((m) => m.role === 'user') as { content?: unknown })?.content ?? '') as unknown;
             const lu = typeof lastUserMsg === 'string' ? lastUserMsg : '';
             const prevBotText = ((([...convo].reverse().find((m) => m.role === 'assistant') as { content?: unknown })?.content ?? '') as unknown);
             const prevBot = typeof prevBotText === 'string' ? prevBotText : '';
             const hadMockup = convo.some((m) => m.role === 'assistant' && typeof (m as { content: unknown }).content === 'string' && /photo was sent to the customer here: mockup/.test((m as { content: string }).content));
             const revisionAsk = hadMockup && /\b(instead( of)?|change|replace|update|modify|edit|make (it|the|them)|put|print|add|remove|swap|redo|regenerate|try again|another (one|try|version)|new mockup|different (colou?r|text|font|logo|size|shape|finish)|in (gold|silver|black|white|red|blue|green|pink|matte|glossy))\b/i.test(lu);
-            const yesToMockup = /^(yes|yeah|yep|yup|sure|ok(ay)?|please|go ahead|do it|generate|make it)\b/i.test(lu.trim()) && /\b(mock-?up|visual|render|concept)\b/i.test(prevBot) && /\?/.test(prevBot);
+            const yesToMockup = /^(yes|yeah|yep|yup|sure|ok(ay)?|please|go ahead|do it|generate|make it)\b/i.test(lu.trim()) && /\b(want|would you like|shall i|should i|can i|like me to|like to see|interested in)\b[^?]*\b(mock-?up|visual|render|concept)\b[^?]*\?/i.test(prevBot);
             const promised = /\b(i('ll| will| can)|let me|i am going to|i'm going to)\b[^.!?]*\b(generate|create|update|make|prepare|render|work on)\b[^.!?]*\b(mock-?up|visual|render|concept|design)\b/i.test(out.content ?? '');
             const claimsMockup = /\b(here is|here's|here are|attached|sending)\b[^.!?]*\b(mock-?up|render|concept|visual)\b/i.test(out.content ?? '');
             const complaintEarly = /\b(you (are|were|said|sent|keep|gave|just)|asked for|i asked|i said|not what|wrong|didn'?t|don'?t|why|instead of)\b/i.test(lu);
@@ -1283,6 +1310,13 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       }
       alog(`draft: ${(reply ?? '').slice(0, 100)}`);
       if (!reply) return;
+      if (!messages.some((m) => m.role === 'tool') && /\b(i('ve| have)? (just )?(updated|changed|revised|regenerated|re-?rendered|adjusted|generated|created|sent|shared|attached|uploaded))\b/i.test(reply)) {
+        alog('false update/send claim without a tool: re-asking');
+        try {
+          const fixed = await chat(deps, [...messages, { role: 'user', content: '[Nothing was changed, generated or sent in this turn. Answer plainly: explain, or offer a new mockup (which only happens when you call make_mockup). Never claim an update you did not make.]' }], false);
+          if (fixed.content?.trim()) reply = fixed.content.trim();
+        } catch { /* keep the draft */ }
+      }
       // Keep the conversation moving: if the reply has no next step and the customer
       // is not closing, add one short follow-up question (missing detail / next action).
       {
@@ -1325,7 +1359,7 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
         const askedBefore = new Set(
           convo.filter((m) => m.role === 'assistant').flatMap((m) => sentencesOf((m as { content: string | null }).content ?? '')).map((q) => norm(q)).filter((q) => q.length > 8),
         );
-        const askedList = [...askedBefore].filter((q) => q.split(' ').length >= 5);
+        const askedList = [...askedBefore].filter((q) => q.split(' ').length >= 3);
         const kept = sentencesOf(reply).filter((part) => {
           if (!/\?\s*$/.test(part)) return true;
           const n = norm(part);
@@ -1371,6 +1405,13 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
         } catch (err) {
           alog(`compress failed: ${(err as Error).message}`);
         }
+      }
+      // The compressor can reintroduce a second question: keep only the first one.
+      {
+        const parts = sentencesOf(reply);
+        let seen = false;
+        const kept = parts.filter((p) => { if (!/\?\s*$/.test(p)) return true; if (seen) return false; seen = true; return true; });
+        if (kept.length < parts.length) reply = kept.join('').replace(/\b(Also|Additionally|And),?\s*$/i, '').trim();
       }
       // Agents don't use emojis in replies.
       reply = reply.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{1F900}-\u{1F9FF}]/gu, '').replace(/[ \t]{2,}/g, ' ').replace(/\s+([.!?,])/g, '$1');
