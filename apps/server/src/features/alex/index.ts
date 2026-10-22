@@ -893,6 +893,9 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
         if (styled) reply = styled;
       }
 
+      // Agents write tight messages: no blank lines between sentences/paragraphs.
+      reply = reply.replace(/[ \t]+\n/g, '\n').replace(/\n{2,}/g, '\n').trim();
+
       const fresh = await deps.db.get<ConvRow>('SELECT id, status FROM conversations WHERE id = ?', [conversationId]);
       if (!fresh || fresh.status !== 'WAITING') return;
       await postMessage(deps, { conversationId, senderType: 'BOT', body: reply });
