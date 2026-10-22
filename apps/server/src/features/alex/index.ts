@@ -393,7 +393,7 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
     { role: 'system', content: 'You are a strict QA checker for packaging mockup renders. Reply with exactly "YES" if everything passes, otherwise "NO: <short reason>".' },
     { role: 'user', content: [
       { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
-      { type: 'text', text: `Requested mockup: ${summary.slice(0, 700)}\n(1) Does the image clearly show that packaging with the right SHAPE and style? Be strict about silhouettes: a heart-shaped box means the box outline itself is a heart (a round or square box with a heart printed on it is NO). For polygon boxes COUNT the sides of the lid/base: triangle 3, pentagon 5, hexagon 6, octagon 8 — a different count fails (an 8-sided box is NOT a hexagon). An open box with inserts must show the inside. Colour and finish must match; where the logo sits (lid vs front) does NOT matter. One clean product photo, no distortions or impossible geometry.${textQ}${oneBoxQ} Ignore the watermark at the bottom.` },
+      { type: 'text', text: `Requested mockup: ${summary.slice(0, 700)}\n(1) Does the image clearly show that packaging with the right SHAPE and style? Be strict about silhouettes: a heart-shaped box means the box outline itself is a heart (a round or square box with a heart printed on it is NO). For polygon boxes COUNT the sides of the lid/base: triangle 3, pentagon 5, hexagon 6, octagon 8 — a different count fails (an 8-sided box is NOT a hexagon). An open box with inserts must show the inside. Colour and finish must match. Details that do NOT matter and must not fail the check: where the logo sits, lid thickness, flat vs slightly domed or bevelled lid, exact proportions, lighting, background shade. One clean product photo, no distortions or impossible geometry.${textQ}${oneBoxQ} Ignore the watermark at the bottom.` },
     ] as unknown as string },
   ], false);
   const a = (out.content ?? '').trim();
@@ -523,7 +523,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
 
   // ── 2b. shape reference from the real photo library (any shape we have a photo of)
   let shapeRef: { name: string; w: number; h: number } | null = null;
-  if (specialShape && shapeWord) {
+  if (specialShape && shapeWord && engine === 'klein') {
     try {
       const row = await deps.db.get<{ path: string; caption: string }>(
         `SELECT path, caption FROM alex_photos WHERE is_product = 1 AND (caption LIKE ? OR tags LIKE ?) ORDER BY RAND() LIMIT 1`,
