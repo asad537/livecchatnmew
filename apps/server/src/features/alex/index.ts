@@ -44,6 +44,7 @@ interface VisitorRow {
 interface PhotoRow {
   id: string;
   website?: string | null;
+  company_logo?: number | null;
   original_name: string;
   mime: string;
   size: number;
@@ -227,6 +228,27 @@ async function recentCustomerImage(deps: AppDeps, conversationId: string): Promi
 }
 
 /** Store a library photo as a file of this conversation and post it as a FILE message. */
+/** 4x RealESRGAN upscale on the pod (website photos are small); returns a JPEG or null. */
+async function upscalePhoto(base: string, data: Buffer, mime: string): Promise<Buffer | null> {
+  const fd = new FormData();
+  fd.append('image', new Blob([data], { type: mime }), `up-${newId().slice(0, 8)}.${mime === 'image/png' ? 'png' : 'jpg'}`);
+  fd.append('overwrite', 'true');
+  const upRes = await fetch(`${base}/upload/image`, { method: 'POST', body: fd, signal: AbortSignal.timeout(45_000) });
+  const upj = (await upRes.json()) as { name?: string; subfolder?: string };
+  if (!upRes.ok || !upj.name) return null;
+  const name = [upj.subfolder, upj.name].filter(Boolean).join('/');
+  const prefix = `alexup-${Math.random().toString(16).slice(2, 10)}`;
+  const wf: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
+    '1': { class_type: 'LoadImage', inputs: { image: name } },
+    '2': { class_type: 'UpscaleModelLoader', inputs: { model_name: 'RealESRGAN_x4plus.pth' } },
+    '3': { class_type: 'ImageUpscaleWithModel', inputs: { upscale_model: ['2', 0], image: ['1', 0] } },
+    '4': { class_type: 'ImageScaleToTotalPixels', inputs: { image: ['3', 0], upscale_method: 'lanczos', megapixels: 2.5, resolution_steps: 1 } },
+    '5': { class_type: 'SaveImage', inputs: { filename_prefix: prefix, images: ['4', 0] } },
+  };
+  const png = await runComfy(base, wf, prefix);
+  return sharp(png).jpeg({ quality: 90 }).toBuffer();
+}
+
 async function sendPhoto(deps: AppDeps, conversationId: string, query: string, wmText: string): Promise<string> {
   const terms = query
     .toLowerCase()
@@ -236,7 +258,7 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
   let rows: PhotoRow[] = [];
   try {
     rows = await deps.db.all<PhotoRow>(
-      `SELECT id, website, original_name, mime, size, path, caption FROM alex_photos
+      `SELECT id, website, company_logo, original_name, mime, size, path, caption FROM alex_photos
         WHERE is_product = 1 AND MATCH(caption, tags) AGAINST (? IN NATURAL LANGUAGE MODE)
         ORDER BY MATCH(caption, tags) AGAINST (? IN NATURAL LANGUAGE MODE) DESC, RAND()
         LIMIT 8`,
@@ -253,7 +275,7 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
   for (const w of words.slice(0, 3)) {
     try {
       const extra = await deps.db.all<PhotoRow>(
-        `SELECT id, website, original_name, mime, size, path, caption FROM alex_photos WHERE is_product = 1 AND (caption LIKE ? OR tags LIKE ?) ORDER BY RAND() LIMIT 5`,
+        `SELECT id, website, company_logo, original_name, mime, size, path, caption FROM alex_photos WHERE is_product = 1 AND (caption LIKE ? OR tags LIKE ?) ORDER BY RAND() LIMIT 5`,
         [`%${w}%`, `%${w}%`],
       );
       for (const r of extra) if (!rows.some((x) => x.id === r.id)) rows.push(r);
@@ -261,20 +283,33 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
   }
   // Photos crawled from another of our websites carry that brand's name: use them only when nothing of our own matches.
   const ownHost = wmText.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase();
-  const isOther = (r: PhotoRow): boolean => Boolean(r.website && r.website.startsWith('site:') && r.website !== `site:${ownHost}`);
-  rows = [...rows.filter((r) => !isOther(r)), ...rows.filter(isOther)].slice(0, 12);
+  // Sites whose photos are only a fallback (ALEX_PHOTO_FALLBACK_SITES, default thecustomboxes.com); other crawled sites rank with our own library.
+  const fallbackSites = (process.env.ALEX_PHOTO_FALLBACK_SITES || 'thecustomboxes.com').toLowerCase().split(',').map((h) => h.trim()).filter(Boolean);
+  const isForeign = (r: PhotoRow): boolean => Boolean(r.website && r.website.startsWith('site:') && r.website !== `site:${ownHost}`);
+  const isOther = (r: PhotoRow): boolean => isForeign(r) && fallbackSites.includes((r.website ?? '').slice(5));
+  // Another brand's photo that carries that brand's logo/name is never shown to this website's customers.
+  rows = rows.filter((r) => !(isForeign(r) && Number(r.company_logo) === 1));
+  rows = [...rows.filter((r) => !isOther(r)).slice(0, 12), ...rows.filter(isOther).slice(0, 8)];
   // Let the big model confirm the candidate really shows what the customer asked for
   // (keyword search alone once returned a Red Bull rigid box for "perfume box").
+  const pickFrom = async (cands: PhotoRow[]): Promise<PhotoRow | null> => {
+    if (cands.length === 0) return null;
+    const list = cands.map((r, i) => `${i + 1}) ${r.caption.slice(0, 220)}`).join('\n');
+    const pick = await chat(deps, [
+      { role: 'system', content: 'You pick product photos for a packaging sales chat. Answer with ONE number only.' },
+      { role: 'user', content: `Customer wants to see: "${query}"${words.length ? ` (product type keywords: ${words.join(', ')})` : ''}\nCandidate photo captions:\n${list}\n\nWhich number shows the SAME product type (e.g. perfume box, mailer box, candle box, pouch) and best matches the request? Prefer captions that mention the product type keywords. Reply 0 if none truly matches.` },
+    ], false);
+    const n = parseInt((pick.content ?? '').match(/\d+/)?.[0] ?? '0', 10);
+    alog(`photo pick for "${query}": ${n} of ${cands.length}`);
+    return n >= 1 && n <= cands.length ? cands[n - 1] : null;
+  };
   if (rows.length > 0) {
     try {
-      const list = rows.map((r, i) => `${i + 1}) ${r.caption.slice(0, 220)}${isOther(r) ? ' [photo from another brand\'s website, shows their name]' : ''}`).join('\n');
-      const pick = await chat(deps, [
-        { role: 'system', content: 'You pick product photos for a packaging sales chat. Answer with ONE number only.' },
-        { role: 'user', content: `Customer wants to see: "${query}"${words.length ? ` (product type keywords: ${words.join(', ')})` : ''}\nCandidate photo captions:\n${list}\n\nWhich number shows the SAME product type (e.g. perfume box, mailer box, candle box, pouch) and best matches the request? Prefer captions that mention the product type keywords. Choose a photo marked [photo from another brand's website] only if no unmarked candidate matches. Reply 0 if none truly matches.` },
-      ], false);
-      const n = parseInt((pick.content ?? '').match(/\d+/)?.[0] ?? '0', 10);
-      alog(`photo pick for "${query}": ${n} of ${rows.length}`);
-      rows = n >= 1 && n <= rows.length ? [rows[n - 1]] : [];
+      const primary = rows.filter((r) => !isOther(r));
+      const fallback = rows.filter(isOther);
+      let chosen = await pickFrom(primary);
+      if (!chosen && fallback.length) { alog('no own photo matched, trying fallback-site photos'); chosen = await pickFrom(fallback); }
+      rows = chosen ? [chosen] : [];
     } catch (err) {
       alog(`photo pick failed: ${(err as Error).message}`);
     }
@@ -297,7 +332,17 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
     fs.mkdirSync(wmDir, { recursive: true });
     const wmPath = path.join(wmDir, `${pick.id}.gz`);
     if (!fs.existsSync(wmPath)) {
-      const { data, mime } = await watermark(gunzipSync(fs.readFileSync(pick.path)), wmText);
+      let raw: Buffer = gunzipSync(fs.readFileSync(pick.path));
+      try {
+        const m = await sharp(raw, { failOn: 'none' }).metadata();
+        if (Math.min(m.width ?? 0, m.height ?? 0) < 1000 && deps.config.alex.comfyUrl) {
+          const up = await upscalePhoto(deps.config.alex.comfyUrl, raw, pick.mime || 'image/jpeg');
+          if (up) { raw = up; alog(`photo ${pick.id} upscaled from ${m.width}x${m.height}`); }
+        }
+      } catch (err) {
+        alog(`upscale skipped: ${(err as Error).message}`);
+      }
+      const { data, mime } = await watermark(raw, wmText);
       await pipeline(Readable.from(data), createGzip(), fs.createWriteStream(wmPath));
       sendMime = mime;
       sendSize = data.length;
@@ -1181,9 +1226,16 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
             const yesToMockup = /^(yes|yeah|yep|yup|sure|ok(ay)?|please|go ahead|do it|generate|make it)\b/i.test(lu.trim()) && /\b(mock-?up|visual|render|concept)\b/i.test(prevBot) && /\?/.test(prevBot);
             const promised = /\b(i('ll| will| can)|let me|i am going to|i'm going to)\b[^.!?]*\b(generate|create|update|make|prepare|render|work on)\b[^.!?]*\b(mock-?up|visual|render|concept|design)\b/i.test(out.content ?? '');
             const wantsMockup = /\b(mock-?up|concept|render|3d|visuali[sz]e|design (it|this|one)|how (it|this) (would|will) look)\b/i.test(lu) || revisionAsk || yesToMockup || promised;
-            const wantsPhoto = /\b(real )?(photo|picture|pic|sample|example|image)s?\b.*\b(you (made|have|did)|made before|previous|of (a|an|your|the))\b|\bshow me (a |some )?(photo|picture|pic|sample|example)s?\b/i.test(lu);
+            const hadPhoto = convo.some((m) => m.role === 'assistant' && typeof (m as { content: unknown }).content === 'string' && /photo was sent to the customer here:/.test((m as { content: string }).content));
+            const PRODUCT_RE = /\b(box|boxes|mailer|mailers|pouch|pouches|sleeve|sleeves|label|labels|bag|bags|carton|cartons|tube|tubes|tray|trays|insert|inserts|packaging|display)\b/i;
+            const shortLu = lu.trim().split(/\s+/).length <= 10;
+            const claimsPhoto = /\b(here is|here's|here are|attached|sending|i've sent|i have sent|sent you)\b[^.!?]*\b(photo|picture|image|pic)s?\b/i.test(out.content ?? '');
+            const wantsPhoto = (/\b(photo|picture|pic|image|example|sample)s?\b/i.test(lu) && (/\b(show|see|have|send|share|look|of)\b/i.test(lu) || hadPhoto))
+              || /\bshow me\b/i.test(lu)
+              || (hadPhoto && shortLu && PRODUCT_RE.test(lu) && !wantsMockup)
+              || claimsPhoto;
             if (wantsMockup || wantsPhoto) {
-              alog(`forcing tool ${wantsMockup ? 'make_mockup' : 'send_photo'}${revisionAsk ? ' (revision)' : ''}${yesToMockup ? ' (yes)' : ''}${promised ? ' (promised)' : ''}`);
+              alog(`forcing tool ${wantsMockup ? 'make_mockup' : 'send_photo'}${revisionAsk ? ' (revision)' : ''}${yesToMockup ? ' (yes)' : ''}${promised ? ' (promised)' : ''}${claimsPhoto ? ' (claimed photo)' : ''}`);
               out = await chat(deps, messages, true, undefined, wantsMockup ? 'make_mockup' : 'send_photo');
             }
           }

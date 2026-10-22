@@ -80,6 +80,8 @@ def fetch_image(url):
         img = Image.open(io.BytesIO(r.content))
         img.load()
         if min(img.size) < 320 or max(img.size) / min(img.size) > 3.2: return None
+        if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+            rgba = img.convert('RGBA'); bg = Image.new('RGB', rgba.size, (255, 255, 255)); bg.paste(rgba, mask=rgba.split()[3]); img = bg
         img = img.convert('RGB')
         img.thumbnail((1600, 1600))
         buf = io.BytesIO(); img.save(buf, 'JPEG', quality=88)
