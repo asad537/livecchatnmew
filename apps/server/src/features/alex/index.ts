@@ -393,7 +393,7 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
     { role: 'system', content: 'You are a strict QA checker for packaging mockup renders. Reply with exactly "YES" if everything passes, otherwise "NO: <short reason>".' },
     { role: 'user', content: [
       { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
-      { type: 'text', text: `Requested mockup: ${summary.slice(0, 700)}\n(1) Does the image clearly show that packaging with the right SHAPE and style? Be strict about silhouettes: a heart-shaped box means the box outline itself is a heart (a round or square box with a heart printed on it is NO); same for round, hexagon, tube etc. An open box with inserts must show the inside. Colour and finish must match. One clean product photo, no distortions or impossible geometry.${textQ}${oneBoxQ} Ignore the watermark at the bottom.` },
+      { type: 'text', text: `Requested mockup: ${summary.slice(0, 700)}\n(1) Does the image clearly show that packaging with the right SHAPE and style? Be strict about silhouettes: a heart-shaped box means the box outline itself is a heart (a round or square box with a heart printed on it is NO). For polygon boxes COUNT the sides of the lid/base: triangle 3, pentagon 5, hexagon 6, octagon 8 — a different count fails (an 8-sided box is NOT a hexagon). An open box with inserts must show the inside. Colour and finish must match. One clean product photo, no distortions or impossible geometry.${textQ}${oneBoxQ} Ignore the watermark at the bottom.` },
     ] as unknown as string },
   ], false);
   const a = (out.content ?? '').trim();
@@ -416,7 +416,9 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const SHAPE_RE = /\b(heart|round|circular|circle|hexagon|hexagonal|octagon|octagonal|tube|cylinder|cylindrical|triangle|triangular|pillow|oval|star|diamond|pyramid)[ -]?(shaped|box|lid|silhouette)?\b/i;
   const shapeWord = (desc.match(SHAPE_RE) ?? prompt.match(SHAPE_RE) ?? convoText.slice(-600).match(SHAPE_RE))?.[1]?.toLowerCase();
   const specialShape = Boolean(shapeWord) && !ref;
-  if (specialShape) prompt = `A ${shapeWord}-shaped two-piece rigid box with a ${shapeWord}-shaped lid and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`;
+  const SIDES: Record<string, string> = { triangle: 'three', triangular: 'three', pentagon: 'five', hexagon: 'six', hexagonal: 'six', octagon: 'eight', octagonal: 'eight', diamond: 'four' };
+  const sidesWord = shapeWord ? SIDES[shapeWord] : undefined;
+  if (specialShape) prompt = `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}, with a ${shapeWord}-shaped lid and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`;
   // The style LoRA was trained on rectangular boxes and pulls unusual silhouettes back to rectangles.
   const lora = specialShape ? null : deps.config.alex.mockupLora;
   if (specialShape) alog(`special shape "${shapeWord}": LoRA off`);
