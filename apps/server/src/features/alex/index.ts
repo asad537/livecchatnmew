@@ -388,7 +388,7 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
   const textQ = expectedText.length
     ? ` (2) Is the printed text spelled exactly as ${expectedText.map((t) => `"${t}"`).join(' and ')} (letter CASE and font do not matter: "CHOCO LOVE" counts as "Choco Love"; only wrong/missing/extra letters fail)?`
     : ' (2) No brand text was requested: the box must carry no readable words (a small abstract logo mark is fine).';
-  const oneBoxQ = ' (3) Exactly ONE box in the picture (its own lifted lid is fine); two or more boxes fail.';
+  const oneBoxQ = ' (3) Exactly ONE box with exactly ONE lid in the picture (its own lifted lid is fine); two boxes, two lids, floating or duplicated parts, or any readable text other than the requested brand text (garbled letters count as text) fail.';
   const out = await chat(deps, [
     { role: 'system', content: 'You are a strict QA checker for packaging mockup renders. Reply with exactly "YES" if everything passes, otherwise "NO: <short reason>".' },
     { role: 'user', content: [
