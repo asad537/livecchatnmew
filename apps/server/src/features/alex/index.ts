@@ -397,7 +397,7 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
         `"text_ok": true/false/null — ${expectedText.length ? `the printed brand text reads exactly ${expectedText.map((t) => `"${t}"`).join(' and ')} (letter case/font do not matter; wrong, missing or extra letters = false)` : 'null if no brand text was requested; false if random readable or garbled text appears'}.\n` +
         `"boxes": number of separate boxes (base trays) visible. A detached lid lying beside its base is part of the SAME box, not a second box — even if the lid has side walls.\n` +
         `"lids": number of lids visible (one detached lid beside one base = 1 lid, 1 box).\n` +
-        `"lid_state": one of "closed_flush" (lid on, fits the base, no gap), "closed_shoulder" (lid fully seated on a base that shows a rim/neck/shoulder below the lid — a normal closed shoulder box), "closed_ajar" (lid on but partly open/tilted or a flap open), "off_resting" (lid removed and resting on the table or leaning on the box, top face up), "floating" (lid in mid-air / not touching anything), "flat_sheet" (the lid is a flat panel with no side walls), "none".\n` +
+        `"lid_state": one of "closed_flush" (lid on, fits the base, no gap; a closed mailer/tuck box with its front tab tucked in also counts), "closed_shoulder" (lid fully seated on a base that shows a rim/neck/shoulder below the lid — a normal closed shoulder box), "closed_ajar" (lid on but partly open/tilted or a flap open), "off_resting" (lid removed and resting on the table or leaning on the box, top face up), "floating" (lid in mid-air / not touching anything), "flat_sheet" (the lid is a flat panel with no side walls), "none".\n` +
         `"defects": short note on impossible geometry, duplicated parts, or none.\n` +
         `Ignore the website watermark at the bottom.` },
     ] as unknown as string },
@@ -445,7 +445,13 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const specialShape = Boolean(shapeWord) && !ref;
   const SIDES: Record<string, string> = { triangle: 'three', triangular: 'three', pentagon: 'five', hexagon: 'six', hexagonal: 'six', octagon: 'eight', octagonal: 'eight', diamond: 'four' };
   const sidesWord = shapeWord ? SIDES[shapeWord] : undefined;
-  if (specialShape) prompt = `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}, with a ${shapeWord}-shaped lid that has its own side walls (a shallow ${shapeWord} tray, not a flat sheet) and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`;
+  const customerWordsEarly = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-4).join(' ');
+  const openEarly = OPEN_RE.test(desc + ' ' + customerWordsEarly) && OPEN_RE.test(customerWordsEarly);
+  if (specialShape) {
+    prompt = openEarly
+      ? `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}, with a ${shapeWord}-shaped lid that has its own side walls (a shallow ${shapeWord} tray, not a flat sheet) and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`
+      : `A single closed ${shapeWord}-shaped rigid gift box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}, lid on and seated, seen as one solid closed shape; the whole silhouette is a ${shapeWord}. ${prompt}`;
+  }
   // The style LoRA was trained on rectangular boxes and pulls unusual silhouettes back to rectangles.
   const engine = (process.env.ALEX_IMAGE_ENGINE || 'klein').toLowerCase() === 'qwen' ? 'qwen' : 'klein';
   const qwenSteps = Number(process.env.ALEX_QWEN_STEPS || 4) === 8 ? 8 : 4;
