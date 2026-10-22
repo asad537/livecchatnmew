@@ -420,14 +420,17 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const sidesWord = shapeWord ? SIDES[shapeWord] : undefined;
   if (specialShape) prompt = `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}, with a ${shapeWord}-shaped lid and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`;
   // The style LoRA was trained on rectangular boxes and pulls unusual silhouettes back to rectangles.
-  const lora = specialShape ? null : deps.config.alex.mockupLora;
+  const engine = (process.env.ALEX_IMAGE_ENGINE || 'klein').toLowerCase() === 'qwen' ? 'qwen' : 'klein';
+  // Style LoRA (trained on Klein) only applies to the Klein engine and rectangular boxes.
+  const lora = engine === 'klein' && !specialShape ? deps.config.alex.mockupLora : null;
   if (specialShape) alog(`special shape "${shapeWord}": LoRA off`);
   const withTrigger = (p: string): string => (lora ? `pbxbox ${p.charAt(0).toLowerCase()}${p.slice(1)}` : p);
   const expectedText = [...prompt.matchAll(/"([^"]{2,40})"/g)].map((m) => m[1]).filter((t) => !/^(pbxbox|studio)/i.test(t));
   const OPEN_RE = /\b(open(ed)?|inside|insert|tray|lid (lifted|off|removed)|contents?|showing the)\b/i;
   const customerWords = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-4).join(' ');
-  const wantsOpen = !ref && OPEN_RE.test(desc + ' ' + customerWords);
-  alog(`mockup prompt${ref ? ' (reference: ' + ref.name + ')' : ''}${specialShape ? ' [shape: ' + shapeWord + ']' : ''}${wantsOpen ? ' [two-stage open view]' : ''}: ${prompt.slice(0, 160)}`);
+  // Klein needs the two-stage trick for open views; Qwen-Image renders them directly.
+  const wantsOpen = !ref && engine === 'klein' && OPEN_RE.test(desc + ' ' + customerWords);
+  alog(`mockup prompt [${engine}]${ref ? ' (reference: ' + ref.name + ')' : ''}${specialShape ? ' [shape: ' + shapeWord + ']' : ''}${wantsOpen ? ' [two-stage open view]' : ''}: ${prompt.slice(0, 160)}`);
 
   // ── 2. render helpers
   const uploadRef = async (data: Buffer, mime: string): Promise<{ name: string; w: number; h: number } | null> => {
@@ -453,6 +456,23 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const renderOnce = async (text: string, refImg: { name: string; w: number; h: number } | null): Promise<Buffer> => {
     const prefix = `alex-${Math.random().toString(16).slice(2, 10)}`;
     const seed = Math.floor(Math.random() * 999_999_999) + 1;
+    if (engine === 'qwen' && !refImg) {
+      // Qwen-Image 20B (fp8) + Lightning 4-step LoRA: strong at shapes, scenes and printed text.
+      const wq: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
+        '1': { class_type: 'UNETLoader', inputs: { unet_name: 'qwen_image_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
+        '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_2.5_vl_7b_fp8_scaled.safetensors', type: 'qwen_image', device: 'default' } },
+        '3': { class_type: 'VAELoader', inputs: { vae_name: 'qwen_image_vae.safetensors' } },
+        '11': { class_type: 'LoraLoaderModelOnly', inputs: { lora_name: 'Qwen-Image-Lightning-4steps-V2.0-bf16.safetensors', strength_model: 1.0, model: ['1', 0] } },
+        '12': { class_type: 'ModelSamplingAuraFlow', inputs: { shift: 3.1, model: ['11', 0] } },
+        '4': { class_type: 'CLIPTextEncode', inputs: { text, clip: ['2', 0] } },
+        '5': { class_type: 'CLIPTextEncode', inputs: { text: ' ', clip: ['2', 0] } },
+        '6': { class_type: 'EmptySD3LatentImage', inputs: { width: 1152, height: 864, batch_size: 1 } },
+        '8': { class_type: 'KSampler', inputs: { seed, steps: 4, cfg: 1.0, sampler_name: 'euler', scheduler: 'simple', denoise: 1.0, model: ['12', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0] } },
+        '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['3', 0] } },
+        '10': { class_type: 'SaveImage', inputs: { filename_prefix: prefix, images: ['9', 0] } },
+      };
+      return runComfy(base, wq, prefix);
+    }
     const wf: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
       '1': { class_type: 'UNETLoader', inputs: { unet_name: 'flux-2-klein-4b.safetensors', weight_dtype: 'default' } },
       '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_3_4b.safetensors', type: 'flux2', device: 'default' } },
