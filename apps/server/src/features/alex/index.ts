@@ -385,12 +385,15 @@ async function runComfy(base: string, workflow: Record<string, { class_type: str
 
 /** Vision QA: does the render show the requested box (shape, style, open/closed, colour) and the brand text exactly? */
 async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], summary: string): Promise<{ ok: boolean; why: string }> {
-  const textQ = expectedText.length ? ` (2) Is the printed text spelled exactly as ${expectedText.map((t) => `"${t}"`).join(' and ')} (letter CASE and font do not matter: "CHOCO LOVE" counts as "Choco Love"; only wrong/missing/extra letters fail)?` : '';
+  const textQ = expectedText.length
+    ? ` (2) Is the printed text spelled exactly as ${expectedText.map((t) => `"${t}"`).join(' and ')} (letter CASE and font do not matter: "CHOCO LOVE" counts as "Choco Love"; only wrong/missing/extra letters fail)?`
+    : ' (2) No brand text was requested: the box must carry no readable words (a small abstract logo mark is fine).';
+  const oneBoxQ = ' (3) Exactly ONE box in the picture (its own lifted lid is fine); two or more boxes fail.';
   const out = await chat(deps, [
     { role: 'system', content: 'You are a strict QA checker for packaging mockup renders. Reply with exactly "YES" if everything passes, otherwise "NO: <short reason>".' },
     { role: 'user', content: [
       { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
-      { type: 'text', text: `Requested mockup: ${summary.slice(0, 700)}\n(1) Does the image clearly show that packaging with the right SHAPE and style? Be strict about silhouettes: a heart-shaped box means the box outline itself is a heart (a round or square box with a heart printed on it is NO); same for round, hexagon, tube etc. An open box with inserts must show the inside. Colour and finish must match. One clean product photo, no distortions or impossible geometry.${textQ} Ignore the watermark at the bottom.` },
+      { type: 'text', text: `Requested mockup: ${summary.slice(0, 700)}\n(1) Does the image clearly show that packaging with the right SHAPE and style? Be strict about silhouettes: a heart-shaped box means the box outline itself is a heart (a round or square box with a heart printed on it is NO); same for round, hexagon, tube etc. An open box with inserts must show the inside. Colour and finish must match. One clean product photo, no distortions or impossible geometry.${textQ}${oneBoxQ} Ignore the watermark at the bottom.` },
     ] as unknown as string },
   ], false);
   const a = (out.content ?? '').trim();
