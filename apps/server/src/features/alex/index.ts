@@ -43,6 +43,7 @@ interface VisitorRow {
 }
 interface PhotoRow {
   id: string;
+  website?: string | null;
   original_name: string;
   mime: string;
   size: number;
@@ -235,7 +236,7 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
   let rows: PhotoRow[] = [];
   try {
     rows = await deps.db.all<PhotoRow>(
-      `SELECT id, original_name, mime, size, path, caption FROM alex_photos
+      `SELECT id, website, original_name, mime, size, path, caption FROM alex_photos
         WHERE is_product = 1 AND MATCH(caption, tags) AGAINST (? IN NATURAL LANGUAGE MODE)
         ORDER BY MATCH(caption, tags) AGAINST (? IN NATURAL LANGUAGE MODE) DESC, RAND()
         LIMIT 8`,
@@ -252,21 +253,24 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
   for (const w of words.slice(0, 3)) {
     try {
       const extra = await deps.db.all<PhotoRow>(
-        `SELECT id, original_name, mime, size, path, caption FROM alex_photos WHERE is_product = 1 AND (caption LIKE ? OR tags LIKE ?) ORDER BY RAND() LIMIT 5`,
+        `SELECT id, website, original_name, mime, size, path, caption FROM alex_photos WHERE is_product = 1 AND (caption LIKE ? OR tags LIKE ?) ORDER BY RAND() LIMIT 5`,
         [`%${w}%`, `%${w}%`],
       );
       for (const r of extra) if (!rows.some((x) => x.id === r.id)) rows.push(r);
     } catch { /* ignore */ }
   }
-  rows = rows.slice(0, 12);
+  // Photos crawled from another of our websites carry that brand's name: use them only when nothing of our own matches.
+  const ownHost = wmText.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase();
+  const isOther = (r: PhotoRow): boolean => Boolean(r.website && r.website.startsWith('site:') && r.website !== `site:${ownHost}`);
+  rows = [...rows.filter((r) => !isOther(r)), ...rows.filter(isOther)].slice(0, 12);
   // Let the big model confirm the candidate really shows what the customer asked for
   // (keyword search alone once returned a Red Bull rigid box for "perfume box").
   if (rows.length > 0) {
     try {
-      const list = rows.map((r, i) => `${i + 1}) ${r.caption.slice(0, 220)}`).join('\n');
+      const list = rows.map((r, i) => `${i + 1}) ${r.caption.slice(0, 220)}${isOther(r) ? ' [photo from another brand\'s website, shows their name]' : ''}`).join('\n');
       const pick = await chat(deps, [
         { role: 'system', content: 'You pick product photos for a packaging sales chat. Answer with ONE number only.' },
-        { role: 'user', content: `Customer wants to see: "${query}"${words.length ? ` (product type keywords: ${words.join(', ')})` : ''}\nCandidate photo captions:\n${list}\n\nWhich number shows the SAME product type (e.g. perfume box, mailer box, candle box, pouch) and best matches the request? Prefer captions that mention the product type keywords. Reply 0 if none truly matches.` },
+        { role: 'user', content: `Customer wants to see: "${query}"${words.length ? ` (product type keywords: ${words.join(', ')})` : ''}\nCandidate photo captions:\n${list}\n\nWhich number shows the SAME product type (e.g. perfume box, mailer box, candle box, pouch) and best matches the request? Prefer captions that mention the product type keywords. Choose a photo marked [photo from another brand's website] only if no unmarked candidate matches. Reply 0 if none truly matches.` },
       ], false);
       const n = parseInt((pick.content ?? '').match(/\d+/)?.[0] ?? '0', 10);
       alog(`photo pick for "${query}": ${n} of ${rows.length}`);
@@ -305,17 +309,21 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
   } catch (err) {
     alog(`watermark failed (sending original): ${(err as Error).message}`);
   }
+  // Crawled photos are stored under their source URL: show the customer a clean file name instead.
+  const shownName = /^https?:\/\//i.test(pick.original_name)
+    ? `${decodeURIComponent(pick.original_name.split('?')[0].split('/').pop() ?? 'photo').replace(/\.(webp|png|jpe?g|gif|avif)$/i, '').replace(/[^a-z0-9-]+/gi, '-').replace(/^-|-$/g, '').toLowerCase() || 'photo'}.jpg`
+    : pick.original_name;
   const fileId = newId();
   await deps.db.run(
     `INSERT INTO files (id, conversation_id, uploader_type, uploader_id, original_name, mime, size,
        scan_status, stored_path, compressed_path, created_at)
      VALUES (?, ?, 'BOT', 'alex', ?, ?, ?, 'CLEAN', NULL, ?, ?)`,
-    [fileId, conversationId, pick.original_name, sendMime, sendSize, sendPath, nowIso()],
+    [fileId, conversationId, shownName, sendMime, sendSize, sendPath, nowIso()],
   );
   await postMessage(deps, {
     conversationId,
     senderType: 'BOT',
-    body: pick.original_name,
+    body: shownName,
     kind: 'FILE',
     fileId,
   });
