@@ -445,6 +445,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const specialShape = Boolean(shapeWord) && !ref;
   const SIDES: Record<string, string> = { triangle: 'three', triangular: 'three', pentagon: 'five', hexagon: 'six', hexagonal: 'six', octagon: 'eight', octagonal: 'eight', diamond: 'four' };
   const sidesWord = shapeWord ? SIDES[shapeWord] : undefined;
+  const OPEN_RE = /\b(open(ed)?|inside|insert|tray|lid (lifted|off|removed)|contents?|showing the)\b/i;
   const customerWordsEarly = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-4).join(' ');
   const openEarly = OPEN_RE.test(desc + ' ' + customerWordsEarly) && OPEN_RE.test(customerWordsEarly);
   if (specialShape) {
@@ -460,7 +461,6 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   if (specialShape) alog(`special shape "${shapeWord}": LoRA off`);
   const withTrigger = (p: string): string => (lora ? `pbxbox ${p.charAt(0).toLowerCase()}${p.slice(1)}` : p);
   const expectedText = [...prompt.replace(/[“”]/g, '"').matchAll(/"([^"]{2,40})"/g)].map((m) => m[1]).filter((t) => !/^(pbxbox|studio)/i.test(t));
-  const OPEN_RE = /\b(open(ed)?|inside|insert|tray|lid (lifted|off|removed)|contents?|showing the)\b/i;
   const customerWords = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-4).join(' ');
   // Klein needs the two-stage trick for open views; Qwen-Image renders them directly.
   const openRequested = OPEN_RE.test(customerWords);
