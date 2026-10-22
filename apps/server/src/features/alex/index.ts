@@ -72,7 +72,7 @@ function alog(msg: string): void {
   console.log('[alex]', msg);
   try { fs.appendFileSync('/root/livechat2/alex/alex.log', line); } catch { /* ignore */ }
 }
-const DEBOUNCE_MS = 900;
+const DEBOUNCE_MS = 2500;
 const HISTORY_LIMIT = 24;
 const MAX_TOOL_ROUNDS = 3;
 const HOLD_GREETING =
@@ -329,6 +329,7 @@ const ENHANCER_SYSTEM =
   'If the customer gave dimensions, express the proportions in words (low and flat / tall and narrow / cube-like). NEVER reuse any number or example from these instructions. ' +
   '(2) Printed text: ONLY the brand/logo text the customer actually gave, in double quotes, on the lid top and front panel, centered, as a bold flat logo. If they gave none, write "a small generic logo mark, no readable text". Never print slogans, taglines, website names or anything from the company side. ' +
   '(3) Colours, material and finish exactly as requested; if not stated, choose what suits the product (e.g. deep red matte rigid for a Valentine chocolate box), not plain white by default. ' +
+  '(3b) If inserts, trays or the product inside must be shown, describe the lid lifted off and placed beside or behind the base, the insert and products neatly visible inside, the box silhouette unchanged and fully recognisable. ' +
   '(4) Scene: one box on a seamless light grey studio backdrop, 3/4 angle slightly from above, soft diffused studio light, soft shadow, 85mm lens, photorealistic, sharp, no people, no hands, no extra props, no other boxes. ' +
   'Output only the prompt.';
 
@@ -382,16 +383,18 @@ async function runComfy(base: string, workflow: Record<string, { class_type: str
   return Buffer.from(await res.arrayBuffer());
 }
 
-/** Vision QA: does the render show the brand text exactly? */
-async function checkPrintedText(deps: AppDeps, png: Buffer, expected: string[]): Promise<boolean> {
+/** Vision QA: does the render show the requested box (shape, style, open/closed, colour) and the brand text exactly? */
+async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], summary: string): Promise<{ ok: boolean; why: string }> {
+  const textQ = expectedText.length ? ` (2) Is the printed text spelled exactly as ${expectedText.map((t) => `"${t}"`).join(' and ')} (letter CASE and font do not matter: "CHOCO LOVE" counts as "Choco Love"; only wrong/missing/extra letters fail)?` : '';
   const out = await chat(deps, [
-    { role: 'system', content: 'You check packaging renders. Answer with exactly YES or NO.' },
+    { role: 'system', content: 'You are a strict QA checker for packaging mockup renders. Reply with exactly "YES" if everything passes, otherwise "NO: <short reason>".' },
     { role: 'user', content: [
       { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
-      { type: 'text', text: `Is the printed text on this box spelled exactly as: ${expected.map((t) => `"${t}"`).join(' and ')}? Ignore case, font and the watermark at the bottom. Answer YES or NO.` },
+      { type: 'text', text: `Requested mockup: ${summary.slice(0, 500)}\n(1) Does the image clearly show that packaging with the right shape/style (e.g. a heart-shaped box must look heart-shaped, an open box with inserts must show the inside), colour and finish, as one clean product photo with no distortions or impossible geometry?${textQ} Ignore the watermark at the bottom.` },
     ] as unknown as string },
   ], false);
-  return /^\s*yes/i.test(out.content ?? '');
+  const a = (out.content ?? '').trim();
+  return { ok: /^\s*yes/i.test(a), why: a.slice(0, 120) };
 }
 
 async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: string, wmText: string, convoText: string): Promise<string> {
@@ -470,23 +473,21 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   }
   const expectedText = [...prompt.matchAll(/"([^"]{2,40})"/g)].map((m) => m[1]).filter((t) => !/^(pbxbox|studio)/i.test(t));
   let bytes = await runComfy(base, workflow, prefix);
-  // Text QA (as in AI Studio): if the brand text is misspelled, try once more with a new seed.
-  if (expectedText.length > 0) {
-    try {
-      const ok = await checkPrintedText(deps, bytes, expectedText);
-      alog(`mockup text QA ${ok ? 'ok' : 'FAILED'} for ${JSON.stringify(expectedText)}`);
-      if (!ok) {
-        (workflow['8'].inputs as { seed: number }).seed = Math.floor(Math.random() * 999_999_999) + 1;
-        const prefix2 = `alex-${Math.random().toString(16).slice(2, 10)}`;
-        (workflow['10'].inputs as { filename_prefix: string }).filename_prefix = prefix2;
-        const bytes2 = await runComfy(base, workflow, prefix2);
-        if (await checkPrintedText(deps, bytes2, expectedText)) bytes = bytes2;
-        else alog('mockup text QA failed twice, sending the second attempt');
-        if (bytes !== bytes2) bytes = bytes2;
-      }
-    } catch (err) {
-      alog(`mockup text QA skipped: ${(err as Error).message}`);
+  // Render QA (as in AI Studio): wrong shape/scene or misspelled brand text → one retry with a new seed.
+  try {
+    const qa = await checkRender(deps, bytes, expectedText, desc);
+    alog(`mockup QA ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
+    if (!qa.ok) {
+      (workflow['8'].inputs as { seed: number }).seed = Math.floor(Math.random() * 999_999_999) + 1;
+      const prefix2 = `alex-${Math.random().toString(16).slice(2, 10)}`;
+      (workflow['10'].inputs as { filename_prefix: string }).filename_prefix = prefix2;
+      const bytes2 = await runComfy(base, workflow, prefix2);
+      const qa2 = await checkRender(deps, bytes2, expectedText, desc);
+      alog(`mockup QA retry ${qa2.ok ? 'ok' : 'FAILED: ' + qa2.why}`);
+      bytes = bytes2;
     }
+  } catch (err) {
+    alog(`mockup QA skipped: ${(err as Error).message}`);
   }
 
   try {
@@ -632,7 +633,8 @@ function buildSystem(deps: AppDeps, name: string, website: WebsiteRow, visitor: 
   const { persona, faq } = loadPersona(deps);
   const parts = [
     `You are ${name}, a human-sounding live chat sales & support agent for "${website.name}" (custom printed packaging). Never say you are an AI unless directly asked; then say you are ${website.name}'s virtual assistant ${name}.`,
-    `Reply like the real agents in the examples: short (1-3 sentences), friendly, confident, one question at a time. Default language English; mirror the customer if they clearly write Urdu/Roman Urdu or another language.`,
+    `Reply like the real agents in the examples: short (1-3 sentences), friendly, confident, exactly ONE question per message (never "Also, ..." with a second question). Default language English; mirror the customer if they clearly write Urdu/Roman Urdu or another language.`,
+    `Policies (minimum order, lead times, prices, shipping): if the website content and the FAQ disagree, the WEBSITE CONTENT wins — e.g. if the site says "no minimum", a single box can be ordered (at a higher unit price); never contradict the customer's own website. ` +
     `FIRST understand what the customer actually said and answer THAT. If they say they do not want boxes, are only asking a question, are unsure, joke, or change topic, respond to it naturally (ask what they are looking for, answer the question, offer options). Never push "size and quantity" unless they have told you what they want to pack or order. Never ask a question you already asked in this chat; if they answered "yes" to your opener, move on to what they want to pack and the details. Every reply ends with the next useful step: a question about the missing detail (type, size, quantity, printing, deadline, contact) or what happens next; never just repeat their order back. When the customer is closing (thanks, that's all, bye), close warmly in one line, invite them to come back or share an email for a quote, and never pressure them for details. If they ask about something we do not make (poly/plastic bags, glass jars...), say so and suggest what we do make.`,
     `Goal of every chat: understand what they need (box type, dimensions L×W×H, quantity, material, printing/finish, deadline), share photos or a mockup when it helps them decide, collect their name + email/phone for the estimate, then CALL the handover tool (do not just say you will) so the team sends the exact quote. Never invent prices, lead times or policies that are not in the FAQ/website content; say the team will confirm.`,
     `When the customer asks to SEE something (sample, picture, example, mockup, render, visual, "show me"), call send_photo or make_mockup in that same turn before asking anything else; a mockup request with a description is enough to call make_mockup right away. ` +
@@ -928,6 +930,18 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
         if (styled) reply = styled;
       }
 
+      // One question per message: drop any further question sentences.
+      {
+        const parts = sentencesOf(reply);
+        let seen = false;
+        const kept = parts.filter((p) => {
+          if (!/\?\s*$/.test(p)) return true;
+          if (seen) return false;
+          seen = true;
+          return true;
+        });
+        if (kept.length < parts.length) { reply = kept.join('').replace(/\b(Also|Additionally|And),?\s*$/i, '').trim(); alog('trimmed extra questions'); }
+      }
       // Agents write tight messages: no blank lines between sentences/paragraphs.
       reply = reply.replace(/[ \t]+\n/g, '\n').replace(/\n{2,}/g, '\n').trim();
 
