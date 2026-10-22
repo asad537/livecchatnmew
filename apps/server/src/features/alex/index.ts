@@ -566,7 +566,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
 
   // ── 2b. shape reference from the real photo library (any shape we have a photo of)
   let shapeRef: { name: string; w: number; h: number } | null = null;
-  if (specialShape && shapeWord && engine === 'klein') {
+  if (specialShape && shapeWord) {
     try {
       const row = await deps.db.get<{ path: string; caption: string }>(
         `SELECT path, caption FROM alex_photos WHERE is_product = 1 AND (caption LIKE ? OR tags LIKE ?) ORDER BY RAND() LIMIT 1`,
@@ -605,8 +605,9 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     else { bytes = stage1.bytes; note = ' (the open view did not render cleanly, so the closed box was sent)'; }
   } else {
     let r = shapeRef
-      ? await renderChecked(`Use the reference image only for the box SHAPE (a ${shapeWord}-shaped box) and proportions; new colours, finish and logo as described: ${prompt}`, shapeRef, 2)
+      ? await renderChecked(`Use the reference image only for the box SHAPE (a closed ${shapeWord}-shaped box, lid seated) and proportions; new colours, finish and logo exactly as described: ${prompt}`, shapeRef, 2)
       : { bytes: Buffer.alloc(0), ok: false };
+    if (shapeRef) alog(`library shape reference render ${r.ok ? 'ok' : 'rejected → text engine'}`);
     if (!r.ok) r = await renderChecked(withTrigger(prompt), null, 3);
     bytes = r.bytes;
   }
