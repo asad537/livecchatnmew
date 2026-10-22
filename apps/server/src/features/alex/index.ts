@@ -397,7 +397,7 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
         `"text_ok": true/false/null — ${expectedText.length ? `the printed brand text reads exactly ${expectedText.map((t) => `"${t}"`).join(' and ')} (letter case/font do not matter; wrong, missing or extra letters = false)` : 'null if no brand text was requested; false if random readable or garbled text appears'}.\n` +
         `"boxes": number of separate boxes (base trays) visible. A detached lid lying beside its base is part of the SAME box, not a second box — even if the lid has side walls.\n` +
         `"lids": number of lids visible (one detached lid beside one base = 1 lid, 1 box).\n` +
-        `"lid_state": one of "closed_flush" (lid on, fits the base, no gap), "closed_ajar" (lid on but partly open/tilted or a flap open), "off_resting" (lid removed and resting on the table or leaning on the box, top face up), "floating" (lid in mid-air / not touching anything), "flat_sheet" (the lid is a flat panel with no side walls), "none".\n` +
+        `"lid_state": one of "closed_flush" (lid on, fits the base, no gap), "closed_shoulder" (lid fully seated on a base that shows a rim/neck/shoulder below the lid — a normal closed shoulder box), "closed_ajar" (lid on but partly open/tilted or a flap open), "off_resting" (lid removed and resting on the table or leaning on the box, top face up), "floating" (lid in mid-air / not touching anything), "flat_sheet" (the lid is a flat panel with no side walls), "none".\n` +
         `"defects": short note on impossible geometry, duplicated parts, or none.\n` +
         `Ignore the website watermark at the bottom.` },
     ] as unknown as string },
@@ -420,8 +420,8 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
   if (Number(j.lids ?? 1) > 1) problems.push('more than one lid');
   if (lid === 'floating') problems.push('lid floating in mid-air');
   if (lid === 'flat_sheet') problems.push('lid is a flat sheet without side walls');
-  if (!openRequested && lid !== 'closed_flush' && lid !== 'none') problems.push('box must be fully closed with the lid flush on the base');
-  if (openRequested && (lid === 'closed_flush' || lid === 'closed_ajar')) problems.push('box must be shown open with the lid off, resting beside the base');
+  if (!openRequested && lid !== 'closed_flush' && lid !== 'closed_shoulder' && lid !== 'none') problems.push('box must be fully closed with the lid seated on the base');
+  if (openRequested && (lid === 'closed_flush' || lid === 'closed_shoulder' || lid === 'closed_ajar')) problems.push('box must be shown open with the lid off, resting beside the base');
   const defects = String(j.defects ?? '').trim();
   if (defects && !/^(none|no|n\/a|-)/i.test(defects)) problems.push(defects.slice(0, 80));
   return { ok: problems.length === 0, why: problems.length ? problems.join('; ') : 'ok' };
@@ -491,7 +491,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       // Qwen-Image 20B (fp8) + Lightning LoRA: strong at shapes, scenes and printed text.
       // It prints quote characters literally, so pass the brand text bare and spell it out once.
       const bare = text.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'");
-      const spelled = expectedText.length ? ` The only printed text is the brand name ${expectedText.join(' and ')}, spelled exactly ${expectedText.map((t) => t.split('').join('-')).join(' and ')}, with no quotation marks, brackets or other characters around it.` : '';
+      const spelled = expectedText.length ? ` The only printed text on the box is the brand name ${expectedText.join(' and ')} in clean lettering, nothing else printed.` : '';
       text = bare + spelled + ' Exactly one box in the frame on an empty seamless backdrop, nothing else in the picture.';
       const wq: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
         '1': { class_type: 'UNETLoader', inputs: { unet_name: 'qwen_image_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
