@@ -347,6 +347,53 @@ async function enhanceMockupPrompt(deps: AppDeps, desc: string, convoText: strin
 }
 
 /** Generate a FLUX.2 mockup on ComfyUI, store it and post it as a FILE message. */
+interface ComfyImage { filename: string; subfolder: string; type: string }
+
+/** Queue a workflow, wait for its SaveImage output and return the PNG bytes. */
+async function runComfy(base: string, workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }>, prefix: string): Promise<Buffer> {
+  const queued = await fetch(`${base}/prompt`, {
+    method: 'POST',
+    signal: AbortSignal.timeout(30_000),
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: workflow, client_id: newId() }),
+  });
+  if (!queued.ok) throw new Error(`ComfyUI /prompt ${queued.status}`);
+  const { prompt_id: promptId } = (await queued.json()) as { prompt_id: string };
+  let image: ComfyImage | null = null;
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline && !image) {
+    await sleep(1500);
+    const h = await fetch(`${base}/history/${promptId}`, { signal: AbortSignal.timeout(15_000) });
+    if (!h.ok) continue;
+    const data = (await h.json()) as Record<string, { outputs?: Record<string, { images?: ComfyImage[] }> }>;
+    const outputs = data[promptId]?.outputs ?? {};
+    for (const node of Object.values(outputs)) {
+      const img = node.images?.find((i: ComfyImage) => i && i.filename.startsWith(prefix));
+      if (img) { image = img; break; }
+    }
+  }
+  if (!image) throw new Error('ComfyUI timed out');
+  const view = new URL(`${base}/view`);
+  view.searchParams.set('filename', image.filename);
+  view.searchParams.set('subfolder', image.subfolder || '');
+  view.searchParams.set('type', image.type || 'output');
+  const res = await fetch(view, { signal: AbortSignal.timeout(60_000) });
+  if (!res.ok) throw new Error(`ComfyUI /view ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/** Vision QA: does the render show the brand text exactly? */
+async function checkPrintedText(deps: AppDeps, png: Buffer, expected: string[]): Promise<boolean> {
+  const out = await chat(deps, [
+    { role: 'system', content: 'You check packaging renders. Answer with exactly YES or NO.' },
+    { role: 'user', content: [
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
+      { type: 'text', text: `Is the printed text on this box spelled exactly as: ${expected.map((t) => `"${t}"`).join(' and ')}? Ignore case, font and the watermark at the bottom. Answer YES or NO.` },
+    ] as unknown as string },
+  ], false);
+  return /^\s*yes/i.test(out.content ?? '');
+}
+
 async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: string, wmText: string, convoText: string): Promise<string> {
   const base = deps.config.alex.comfyUrl;
   if (!base) return 'Mockup generation is not available right now. Describe it in words instead.';
@@ -421,41 +468,29 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     workflow['5'].inputs.conditioning = ['23', 0];
     workflow['8'].inputs.positive = ['23', 0];
   }
-  const queued = await fetch(`${base}/prompt`, {
-    method: 'POST',
-    signal: AbortSignal.timeout(30_000),
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ prompt: workflow, client_id: newId() }),
-  });
-  if (!queued.ok) throw new Error(`ComfyUI /prompt ${queued.status}`);
-  const { prompt_id: promptId } = (await queued.json()) as { prompt_id: string };
-
-  // Poll history (FLUX klein 4 steps ≈ 5-10 s on the A40).
-  interface ComfyImage { filename: string; subfolder: string; type: string }
-  let image: ComfyImage | null = null;
-  const deadline = Date.now() + 90_000;
-  while (Date.now() < deadline && !image) {
-    await sleep(1500);
-    const h = await fetch(`${base}/history/${promptId}`, { signal: AbortSignal.timeout(15_000) });
-    if (!h.ok) continue;
-    const data = (await h.json()) as Record<string, { outputs?: Record<string, { images?: ComfyImage[] }> }>;
-    const outputs = data[promptId]?.outputs ?? {};
-    for (const node of Object.values(outputs)) {
-      const img = node.images?.find((i: ComfyImage) => i && i.filename.startsWith(prefix));
-      if (img) { image = img; break; }
+  const expectedText = [...prompt.matchAll(/"([^"]{2,40})"/g)].map((m) => m[1]).filter((t) => !/^(pbxbox|studio)/i.test(t));
+  let bytes = await runComfy(base, workflow, prefix);
+  // Text QA (as in AI Studio): if the brand text is misspelled, try once more with a new seed.
+  if (expectedText.length > 0) {
+    try {
+      const ok = await checkPrintedText(deps, bytes, expectedText);
+      alog(`mockup text QA ${ok ? 'ok' : 'FAILED'} for ${JSON.stringify(expectedText)}`);
+      if (!ok) {
+        (workflow['8'].inputs as { seed: number }).seed = Math.floor(Math.random() * 999_999_999) + 1;
+        const prefix2 = `alex-${Math.random().toString(16).slice(2, 10)}`;
+        (workflow['10'].inputs as { filename_prefix: string }).filename_prefix = prefix2;
+        const bytes2 = await runComfy(base, workflow, prefix2);
+        if (await checkPrintedText(deps, bytes2, expectedText)) bytes = bytes2;
+        else alog('mockup text QA failed twice, sending the second attempt');
+        if (bytes !== bytes2) bytes = bytes2;
+      }
+    } catch (err) {
+      alog(`mockup text QA skipped: ${(err as Error).message}`);
     }
   }
-  if (!image) throw new Error('ComfyUI timed out');
 
-  const view = new URL(`${base}/view`);
-  view.searchParams.set('filename', image.filename);
-  view.searchParams.set('subfolder', image.subfolder || '');
-  view.searchParams.set('type', image.type || 'output');
-  const res = await fetch(view, { signal: AbortSignal.timeout(60_000) });
-  if (!res.ok || !res.body) throw new Error(`ComfyUI /view ${res.status}`);
-  let bytes = Buffer.from(await res.arrayBuffer());
   try {
-    bytes = Buffer.from((await watermark(bytes, wmText)).data) as typeof bytes;
+    bytes = Buffer.from((await watermark(bytes, wmText)).data);
   } catch (err) {
     alog(`watermark failed on mockup: ${(err as Error).message}`);
   }
