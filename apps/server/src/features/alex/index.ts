@@ -52,6 +52,7 @@ interface PhotoRow {
   caption: string; tags?: string | null;
 }
 
+const PHOTO_SHAPE_KEYS = new Set(['triangle', 'triangular', 'round', 'circular', 'hexagon', 'hexagonal', 'octagon', 'octagonal', 'oval', 'star', 'diamond', 'pyramid', 'heart', 'pillow', 'tube']);
 // Box styles / product types a customer may ask to see, with the words a caption may use for them.
 const PHOTO_TYPES: Record<string, string[]> = {
   gable: ['gable'], mailer: ['mailer', 'mailing'], magnetic: ['magnetic', 'magnet'], rigid: ['rigid', 'setup box'],
@@ -352,9 +353,11 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
       for (const r of extra) if (!rows.some((x) => x.id === r.id)) rows.push(r);
     } catch { /* ignore */ }
   }
+  const shapeKeys = typeWords.filter((k) => PHOTO_SHAPE_KEYS.has(k));
   if (typeWords.length) {
     const all = rows.filter((r) => typeWords.every((k) => matchesType(r, k)));
-    const any = rows.filter((r) => typeWords.some((k) => matchesType(r, k)));
+    // a requested shape is never optional: "star shaped soap box" must not fall back to any soap box
+    const any = rows.filter((r) => typeWords.some((k) => matchesType(r, k)) && shapeKeys.every((k) => matchesType(r, k)));
     const kept = all.length ? all : any;
     alog(`photo type filter [${typeWords.join(', ')}]: ${kept.length} of ${rows.length} candidates mention the type`);
     rows = kept;
@@ -402,7 +405,7 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
           const out = await chat(deps, [
             { role: 'user', content: [
               { type: 'image_url', image_url: { url: `data:${r.mime || 'image/jpeg'};base64,${raw.toString('base64')}` } },
-              { type: 'text', text: `Does this photo clearly show a ${typeWords.join(' / ')} (as a packaging product type / box style)? Answer YES or NO only.` },
+              { type: 'text', text: `${shapeKeys.length ? `Is the BOX in this photo itself ${shapeKeys.join(' / ')}-shaped (its outline, not a printed decoration or logo)? ` : ''}${typeWords.filter((k) => !shapeKeys.includes(k)).length ? `Does this photo clearly show a ${typeWords.filter((k) => !shapeKeys.includes(k)).join(' / ')} (as a packaging product type / box style)? ` : ''}Answer YES only if every question is true, otherwise NO. Answer YES or NO only.` },
             ] as unknown as string },
           ], false);
           const yes = /^\s*yes/i.test(out.content ?? '');
@@ -490,7 +493,7 @@ const ENHANCER_SYSTEM =
   '(1) The product decides the box: say the exact style and shape and describe its real geometry. Mailer box = corrugated roll-end tuck-front, wide and shallow, hinged lid; rigid box = two-piece lid and base, thick walls, matte wrapped paper, the LID is itself a shallow tray with its own side walls (rim) that sits over the base (never a flat sheet); tuck-end = slim folding carton; pouch = stand-up pouch with gusset; ' +
   'heart-shaped / round / hexagon / tube boxes keep that silhouette (e.g. "a heart-shaped two-piece rigid box: heart-shaped base tray with straight walls and a matching flat heart-shaped lid"); chocolate, candle, perfume, cosmetics, bakery etc. imply the matching box type and, if asked, inserts with the product visible. ' +
   'If the customer gave dimensions, express the proportions in words (low and flat / tall and narrow / cube-like). NEVER reuse any number or example from these instructions. ' +
-  '(2) Printed text: ONLY a brand/logo name the customer explicitly gave as such (e.g. "logo that says X", "my brand X", "print X on it"), in double quotes, on the lid top and front panel, centered, as a bold flat logo. Product words (chocolate, candle, heart box...), requests, and misspellings are NOT brand text. Dimensions and numbers are NEVER printed on the box; describe size only as proportions in words. If no brand name was given, write "a small generic logo mark, no readable text". Never print slogans, taglines, website names or anything from the company side. ' +
+  '(2) Printed text: ONLY a brand/logo name the customer explicitly gave as such (e.g. "logo that says X", "my brand X", "print X on it"), in double quotes, on the lid top and front panel, centered, as a bold flat logo. Product words (chocolate, candle, heart box...), requests, and misspellings are NOT brand text. Dimensions and numbers are NEVER printed on the box; describe size only as proportions in words. If no brand name was given, describe the box as plain and unprinted (blank surfaces with a thin foil border line) and never mention a logo, text, lettering or label. Never print slogans, taglines, website names or anything from the company side. ' +
   '(3) Colours, material and finish exactly as requested; if not stated, choose what suits the product (e.g. deep red matte rigid for a Valentine chocolate box), not plain white by default. ' +
   '(3b) DEFAULT: the box is shown CLOSED with its lid on (a clean product shot) and NOTHING about the contents or the product inside is mentioned (no candles, chocolates, bottles) — only the box exterior. Only when the customer explicitly asks to see inside, open, the insert or the contents, describe the lid of that SAME box taken off and resting on the table beside or behind its base, printed top face up towards the camera, with its own side walls/rim like a real lid (never floating in the air, never upside down) — the insert and products neatly visible inside, the silhouette unchanged and fully recognisable. Exactly ONE box in the picture, never a second smaller box. ' +
   '(4) Scene: one box on a seamless light grey studio backdrop, 3/4 angle slightly from above, soft diffused studio light, soft shadow, 85mm lens, photorealistic, sharp, no people, no hands, no extra props, no other boxes. ' +
@@ -501,7 +504,7 @@ const SHEET_ENHANCER_SYSTEM =
   '"Professional packaging presentation sheet for a <product> box, one image laid out as a grid of five photos with thin white gutters. Large main photo top-left: a closed <full box description: style and real geometry, proportions in words, material, colour, finish, decorative accents, logo or brand text and where it sits> standing on <scene>. Top-right photo: the same box open <how this style opens>, showing <fitted insert and the product> inside. Bottom row, three smaller photos of the same closed box: seen straight from the front, from a three-quarter angle, and from directly above. Every panel shows the identical box and design. Photorealistic product photography, <lighting>, sharp." ' +
   'Rules: (1) The product decides the style: perfume, cosmetics, jewellery, watches, premium gifts = rigid box with a full-depth magnetic lid or a hinged book-style lid (thick walls, matte wrapped paper, optionally a thin gold or silver foil border line on the front); chocolate or sweets = rigid two-piece box with a tray insert; candle = rigid two-piece or tuck-top box; mailer = corrugated roll-end tuck-front box with a hinged lid; tuck-end = slim folding carton; pouch = stand-up pouch; heart, round, hexagon or tube boxes: the box AND its lid keep that silhouette in all five photos (the open view shows the same shaped lid lifted off and resting beside the shaped base, never a hinged rectangular box). ' +
   'Dimensions: describe the proportions in words only (wider than tall, slim depth, cube-like, tall and narrow...); never write numbers, units, dimension arrows or labels anywhere in the prompt. The logo is the brand name alone: no emblem, monogram or initial above or beside it. ' +
-  '(2) Printed text: ONLY a brand or logo name the customer explicitly gave as such, written in double quotes, as a foil or printed logo centered on the lid or front panel; product words, requests and misspellings are not brand text. If no brand name was given, write "a small generic logo mark, no readable text". Never slogans, taglines, website names or anything from the company side, and no other text anywhere. ' +
+  '(2) Printed text: ONLY a brand or logo name the customer explicitly gave as such, written in double quotes, as a foil or printed logo centered on the lid or front panel; product words, requests and misspellings are not brand text. If no brand name was given, describe the box as plain and unprinted (blank surfaces with a thin foil border line) and never mention a logo, text, lettering or label. Never slogans, taglines, website names or anything from the company side, and no other text anywhere. ' +
   '(3) Colours, material and finish exactly as requested; if not stated, choose what suits the product. The scene suits the product (cream marble table with blurred gold decor for perfume or cosmetics, rustic wood for candles, clean white studio for mailers). ' +
   '(4) The open view shows the matching product inside (a perfume bottle, chocolates, a candle, the item they pack) sitting in a fitted insert; no people, no hands. ' +
   '(5) If the customer asked for a window (die-cut window, clear window, PVC window), it is part of the box in EVERY closed view: name its shape (round, square, rectangular, heart, oval) and position on the front panel or lid, with the product visible through it; never leave it out. Output only the prompt.';
@@ -646,7 +649,7 @@ async function sheetPanels(png: Buffer): Promise<{ x: number; y: number; w: numb
   }
   return panels;
 }
-const SHAPE_QUESTION = 'name the outline shape of the box BASE as seen from above (its footprint): one of heart, round, hexagon, octagon, triangle, square, rectangle, oval, star, diamond, pillow, tube, pyramid, other. Judge the base/body that holds the product, never the lid: if the box is open, look only at the tray the product sits in and ignore the raised or removed lid completely. A base with four corners is "square" or "rectangle" even when its lid is a triangle or another shape.';
+const SHAPE_QUESTION = 'name the outline shape of the box BASE as seen from above (its footprint): one of heart, round, hexagon, octagon, triangle, square, rectangle, oval, star, diamond, pillow, tube, pyramid, other. Judge ONLY the outer walls of the box base. Ignore the lid, and ignore whatever sits inside the box: a star-shaped soap or a heart-shaped chocolate lying in a tray with four straight walls means the box is "square" or "rectangle". A base with four corners is "square" or "rectangle" even when its lid or its contents have another shape.';
 /** Levenshtein distance (small strings only). */
 function editDistance(a: string, b: string): number {
   const dp: number[] = Array.from({ length: b.length + 1 }, (_, j) => j);
@@ -661,16 +664,16 @@ function editDistance(a: string, b: string): number {
   return dp[b.length];
 }
 /** Outline shape of the single box in one photo plus every piece of text printed on it (vision model). */
-async function singlePhotoCheck(deps: AppDeps, img: Buffer, mime = 'image/png'): Promise<{ shape: string; text: string; productInside: boolean }> {
+async function singlePhotoCheck(deps: AppDeps, img: Buffer, mime = 'image/png', shapeWord?: string): Promise<{ shape: string; text: string; productInside: boolean; lid: string; closed: boolean; extraParts: boolean; allPartsShape: boolean }> {
   const out = await chat(deps, [
     { role: 'system', content: 'You describe packaging photos precisely. Reply with ONLY a JSON object, no prose.' },
     { role: 'user', content: [
       { type: 'image_url', image_url: { url: `data:${mime};base64,${img.toString('base64')}` } },
-      { type: 'text', text: `For this photo of a box, ${SHAPE_QUESTION} Also transcribe ALL text, letters, initials or monogram letters printed on the box or inside it (not the website watermark), exactly as written, or "" if none. Also say whether a product (chocolates, a bottle, a candle, an item) is visible inside the open box. Return {"shape":"...","text":"...","product_inside":true/false}.` },
+      { type: 'text', text: `For this photo of a box, ${SHAPE_QUESTION} Also transcribe ALL text, letters, initials or monogram letters printed on the box or inside it (not the website watermark), exactly as written, or "" if none. Also say whether a product (chocolates, a bottle, a candle, an item) is visible inside the open box; the outline shape of the LID if a lid is visible (same shape words, or "none"); and whether the photo shows a proper closed box with its lid seated (false if it is open, or if it shows only an insert, a tray, a product or a part). Also: "extra_parts" = true only if the photo shows a hook, metal ring, strap, handle, wire, a second separate box, or hands; an insert or tray inside the box is normal and does not count.${shapeWord ? ` "all_parts_shape" = true only if EVERY visible part of the box (base, lid, any flap) has a ${shapeWord} outline; false if any part is square, rectangular or another shape.` : ''} Return {"shape":"...","text":"...","product_inside":true/false,"lid":"...","closed":true/false,"extra_parts":true/false${shapeWord ? ',"all_parts_shape":true/false' : ''}}.` },
     ] as unknown as string },
   ], false);
-  const j = parseQaJson((out.content ?? '').trim()) as { shape?: string; text?: string; product_inside?: boolean };
-  return { shape: String(j.shape ?? '').toLowerCase(), text: String(j.text ?? '').trim(), productInside: j.product_inside === true };
+  const j = parseQaJson((out.content ?? '').trim()) as { shape?: string; text?: string; product_inside?: boolean; lid?: string; closed?: boolean; extra_parts?: boolean; all_parts_shape?: boolean };
+  return { shape: String(j.shape ?? '').toLowerCase(), text: String(j.text ?? '').trim(), productInside: j.product_inside === true, lid: String(j.lid ?? 'none').toLowerCase(), closed: j.closed === true, extraParts: j.extra_parts === true, allPartsShape: shapeWord ? j.all_parts_shape === true : true };
 }
 /** Per-panel shape report for a sheet: panel rectangles (from the white gutters), the shape seen in each, and the indexes that are not the requested shape. */
 async function panelShapeReport(deps: AppDeps, png: Buffer, shapeWord: string): Promise<{ panels: { x: number; y: number; w: number; h: number }[]; shapes: string[]; bad: number[] } | null> {
@@ -683,16 +686,19 @@ async function panelShapeReport(deps: AppDeps, png: Buffer, shapeWord: string): 
     content.push({ type: 'text', text: `Photo ${i + 1}:` });
     content.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${crop.toString('base64')}` } });
   }
-  content.push({ type: 'text', text: `These are ${panels.length} separate photos of a box (some closed, one may be open with the lid off or lifted). For EACH photo ${SHAPE_QUESTION} Return ONLY {"shapes":["...", ...]} with exactly ${panels.length} entries in order.` });
+  content.push({ type: 'text', text: `These are ${panels.length} separate photos of a box (some closed, one may be open with the lid off or lifted). For EACH photo ${SHAPE_QUESTION} Also, for each photo, say in two words what lies inside the box ("closed" if it is closed), and the outline shape of the LID if one is visible (same shape words, or "none"). Return ONLY {"shapes":["...", ...],"contents":["...", ...],"lids":["...", ...]} with exactly ${panels.length} entries each, in order.` });
   const out = await chat(deps, [
     { role: 'system', content: 'You describe packaging photos precisely. Reply with ONLY a JSON object, no prose.' },
     { role: 'user', content: content as unknown as string },
   ], false);
-  const j = parseQaJson((out.content ?? '').trim()) as { shapes?: string[] };
+  const j = parseQaJson((out.content ?? '').trim()) as { shapes?: string[]; contents?: string[]; lids?: string[] };
   if (!Array.isArray(j.shapes) || j.shapes.length !== panels.length) { alog(`panel crop check unusable (${panels.length} panels, shapes=${JSON.stringify(j.shapes ?? null)})`); return null; }
   const shapes = j.shapes.map((sh) => String(sh).toLowerCase());
-  alog(`panel shapes (crops) for ${shapeWord}: ${shapes.join(', ')}`);
-  const bad = shapes.map((sh, i) => (ok.some((w) => sh.includes(w)) ? -1 : i)).filter((i) => i >= 0);
+  alog(`panel shapes (crops) for ${shapeWord}: ${shapes.join(', ')}${Array.isArray(j.contents) ? ` | contents: ${j.contents.map(String).join(', ')}` : ''}`);
+  const lids = Array.isArray(j.lids) && j.lids.length === panels.length ? j.lids.map((l) => String(l).toLowerCase()) : [];
+  const lidBad = (i: number): boolean => Boolean(lids[i]) && lids[i] !== 'none' && !ok.some((w) => lids[i].includes(w));
+  const bad = shapes.map((sh, i) => (ok.some((w) => sh.includes(w)) && !lidBad(i) ? -1 : i)).filter((i) => i >= 0);
+  if (lids.length) alog(`panel lids for ${shapeWord}: ${lids.join(', ')}`);
   return { panels, shapes, bad };
 }
 /** Second, per-panel QA for special shapes: the global "same_box" judgement misses one odd panel (a triangle sheet once passed with a rectangular open view). */
@@ -962,7 +968,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const openRequested = OPEN_RE.test(customerWords);
   const wantsOpen = !ref && engine === 'klein' && openRequested;
   if (!openRequested && !ref && !revision && !sheetMode) prompt = `${prompt.replace(/\b(for|holding|containing|with) (a |an |the )?(candle|candles|chocolate|chocolates|perfume|bottle|bottles|cosmetics?|soap|jewell?ery)s?\b/gi, '')} The box is completely closed: the lid is fully seated on the base so only a thin seam line shows where they meet, every flap tucked in, nothing lifted or ajar, nothing visible inside.`;
-  alog(`mockup prompt [${engine}]${sheetMode ? ' [sheet]' : ''}${revision ? ' [revision]' : ''}${ref ? ' (reference: ' + ref.name + ')' : ''}${specialShape ? ' [shape: ' + shapeWord + ']' : ''}${wantsOpen ? ' [two-stage open view]' : ''}: ${prompt.slice(0, 160)}`);
+  alog(`mockup prompt [${engine}]${sheetMode ? ' [sheet]' : ''}${revision ? ' [revision]' : ''}${ref ? ' (reference: ' + ref.name + ')' : ''}${specialShape ? ' [shape: ' + shapeWord + ']' : ''}${wantsOpen ? ' [two-stage open view]' : ''}: ${prompt.slice(0, 1500)}`);
 
   // ── 2. render helpers
   const uploadRef = async (data: Buffer, mime: string): Promise<{ name: string; w: number; h: number } | null> => {
@@ -995,10 +1001,13 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     if (engine === 'qwen' && !refImg) {
       // Qwen-Image 20B (fp8) + Lightning LoRA: strong at shapes, scenes and printed text.
       // It prints quote characters literally, so pass the brand text bare and spell it out once.
-      const bare = text.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'");
+      let bare = text.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'")
+        .replace(/a small generic logo mark,? no readable text/gi, 'plain blank surfaces with a thin foil border line');
+      // No brand given: any clause that even mentions a logo, brand, lettering or label makes Qwen print gibberish.
+      if (expectedText.length === 0) bare = bare.replace(/,?[^,.;]*\b(logo\w*|brand\w*|letter\w*|typograph\w*|monogram\w*|emblem\w*|wordmark\w*|label\w*|printed text|readable text|text)\b[^,.;]*/gi, '').replace(/\s+/g, ' ').replace(/\.\s*\./g, '.');
       const spelled = expectedText.length
         ? ` Printed on the box, centered: the brand name ${expectedText.join(' and ')}. Nothing else is printed anywhere on the box: no other words, letters, initials, monograms, emblems, marks or small secondary lines under the name${sheetMode ? ', and no numbers, labels or other text anywhere in the image' : ''}.`
-        : sheetMode ? ' No readable text on the box and no numbers, labels or text anywhere in the image.' : '';
+        : ' The box is plain and unprinted: smooth blank surfaces with a thin foil border line.';
       text = bare + spelled + (sheetMode && !dims ? ' Every panel shows the identical box; nothing else besides the box, its insert and its product.' : dims ? ' Exactly one box in the frame, nothing else besides the box, its insert and its product.' : ' Exactly one box in the frame on an empty seamless backdrop, nothing else in the picture.');
       const wq: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
         '1': { class_type: 'UNETLoader', inputs: { unet_name: 'qwen_image_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
@@ -1069,7 +1078,11 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
 
   const repairPanels = async (sheet: Buffer): Promise<Buffer> => {
     const report = await panelShapeReport(deps, sheet, shapeWord!).catch(() => null);
-    if (!report || report.bad.length === 0 || report.bad.length > 4) return sheet;
+    if (!report) return sheet;
+    // The vision model keeps misjudging the open view inside the grid (a rectangular tray with a star lid passes),
+    // while a single open-view render is reliable: always re-render panel 2 singly.
+    if (report.panels.length === 5 && !report.bad.includes(1)) report.bad.push(1);
+    if (report.bad.length === 0 || report.bad.length > 5) return sheet;
     const mainSentence = prompt.match(/top-left:\s*(.+?)(?:\.\s|$)/i)?.[1] ?? '';
     const boxDesc = (mainSentence.replace(/^(a|an)\s+(closed\s+)?/i, '').replace(/\s(standing|sitting|placed|resting|set|displayed|lying|positioned|shown)\s(on|against)\b.*$/i, '').trim() || desc).slice(0, 400);
     alog(`panel repair box description: ${boxDesc.slice(0, 160)}`);
@@ -1084,23 +1097,37 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     for (const idx of report.bad) {
       const pn = report.panels[idx];
       const view = views[idx] ?? views[3];
+      // Qwen-Image renders negatives literally ("no hooks" produced hooks): say only what IS there, and avoid "magnetic" (metal clasps).
+      const boxDescClean = boxDesc.replace(/\bmagnetic (closure|lid|flap)\b/gi, 'lift-off lid').replace(/\b(magnetic|magnet|hinged|hinge|clasp|button)\b/gi, '').replace(/\s+/g, ' ').replace(/\s,/g, ',').trim();
       const text = view === 'open'
-        ? `A single ${shapeWord}-shaped rigid gift box${sides}, open, seen from high above: the ${shapeWord}-shaped base lies flat on the table as a ${shapeWord} tray whose walls follow the ${shapeWord} outline, holding ${product} clearly visible in a fitted insert; the separate ${shapeWord}-shaped lid lies flat on the table next to it, fully detached, with a gap of table visible between lid and base. The box is ${boxDesc}, standing on ${scene}. Photorealistic luxury product photography, soft studio light, sharp.`
-        : `A single closed ${shapeWord}-shaped rigid gift box${sides}, lid seated, ${view}, the whole silhouette a ${shapeWord}. The box is ${boxDesc}, standing on ${scene}. Photorealistic luxury product photography, soft studio light, sharp.`;
+        ? `A single ${shapeWord}-shaped rigid gift box${sides}, open, seen from high above: the ${shapeWord}-shaped base rests flat on the table as a ${shapeWord} tray with walls that follow the ${shapeWord} outline, holding ${product} in a fitted insert; the separate ${shapeWord}-shaped lid rests flat on the table beside it, with a gap of table between lid and base. The box is ${boxDescClean}, standing on ${scene}. Photorealistic luxury product photography, soft studio light, sharp.`
+        : `A single closed ${shapeWord}-shaped rigid gift box${sides}, lid on and fully closed, ${view}; the whole silhouette is one clean solid ${shapeWord}. The box is ${boxDescClean}, standing on ${scene}. Photorealistic luxury product photography, soft studio light, sharp.`;
       const k = 1024 / Math.max(pn.w, pn.h);
       const rw = Math.max(512, Math.round((pn.w * k) / 16) * 16), rh = Math.max(512, Math.round((pn.h * k) / 16) * 16);
-      for (let t = 1; t <= 2; t++) {
+      let fallback: { img: Buffer; score: number } | null = null;
+      for (let t = 1; t <= 3; t++) {
         try {
           const img = await renderOnce(text, null, undefined, { w: rw, h: rh });
-          const chk = await singlePhotoCheck(deps, img);
+          const chk = await singlePhotoCheck(deps, img, 'image/png', shapeWord);
+          if (process.env.ALEX_DEBUG_PANELS) fs.writeFileSync(`/tmp/repair-${idx + 1}-${t}.png`, img);
           const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
           // the vision model (or Qwen) may "fix" a customer's spelling: allow up to 2 differing letters
           const textOk = expectedText.length ? editDistance(norm(chk.text), norm(expectedText.join(''))) <= 2 : norm(chk.text).length <= 2;
           const productOk = view !== 'open' || chk.productInside;
-          alog(`panel ${idx + 1} (${view}) re-render ${t}: shape=${chk.shape} text="${chk.text}"${textOk ? '' : ' (text rejected)'}${productOk ? '' : ' (no product inside)'}`);
-          if (!okWords.some((w) => chk.shape.includes(w)) || !textOk || !productOk) continue;
-          const patch = await sharp(img).resize(pn.w, pn.h, { fit: 'cover' }).png().toBuffer();
+          // a visible lid must have the shape too (Qwen likes to leave a square hinged lid behind the star tray)
+          const lidOk = (chk.lid === 'none' || chk.lid === '' || okWords.some((w) => chk.lid.includes(w))) && chk.allPartsShape && !chk.extraParts;
+          const closedOk = view === 'open' || chk.closed;
+          const shapeOk = okWords.some((w) => chk.shape.includes(w));
+          alog(`panel ${idx + 1} (${view}) re-render ${t}: shape=${chk.shape} lid=${chk.lid} closed=${chk.closed} text="${chk.text}"${textOk ? '' : ' (text rejected)'}${productOk ? '' : ' (no product inside)'}${lidOk ? '' : ' (lid shape rejected)'}${closedOk ? '' : ' (not a closed box)'}`);
+          const score = [shapeOk, textOk, productOk, lidOk, closedOk].filter((ok) => !ok).length;
+          // a right-shaped panel with a smaller flaw still beats the wrong-shaped one in the grid
+          if (shapeOk && textOk && (view !== 'open' || productOk) && (!fallback || score < fallback.score)) fallback = { img, score };
+          if (score > 0 && t < 3) continue;
+          const chosen = score === 0 ? img : fallback?.img;
+          if (!chosen) break;
+          const patch = await sharp(chosen).resize(pn.w, pn.h, { fit: 'cover' }).png().toBuffer();
           out = await sharp(out).composite([{ input: patch, left: pn.x, top: pn.y }]).png().toBuffer();
+          alog(`panel ${idx + 1} replaced (${score === 0 ? 'clean' : 'best of 3'})`);
           break;
         } catch (err) {
           alog(`panel ${idx + 1} re-render failed: ${(err as Error).message}`);
@@ -1108,6 +1135,60 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       }
     }
     return out;
+  };
+
+  // Special shapes: render the five panels one by one (a single box renders reliably; a five-panel grid keeps
+  // slipping in a square lid, a hook or a loose insert), check each, and compose the sheet ourselves.
+  const composeSpecialSheet = async (): Promise<Buffer> => {
+    const mainSentence = prompt.match(/top-left:\s*(.+?)(?:\.\s|$)/i)?.[1] ?? '';
+    const boxDesc = (mainSentence.replace(/^(a|an)\s+(closed\s+)?/i, '').replace(/\s(standing|sitting|placed|resting|set|displayed|lying|positioned|shown)\s(on|against)\b.*$/i, '').trim() || desc).slice(0, 400);
+    const productGuess = Object.keys(PHOTO_TYPES).find((k) => !['window', 'handle', 'heart', 'rigid', 'magnetic', 'tuck', 'sleeve', 'drawer', 'pillow', 'tube', 'hexagon', 'display', 'corrugated', 'shipping', 'mailer', 'gable', 'bag', 'pouch', 'label', 'sticker'].includes(k) && !PHOTO_SHAPE_KEYS.has(k) && new RegExp(`\\b${k}`, 'i').test(desc + ' ' + customerWords));
+    const product = (prompt.match(/showing (.+?) (?:inside|sitting|nestled|resting)/i)?.[1] ?? (productGuess ? `${productGuess}s` : 'the product')).trim().slice(0, 120);
+    const scene = (mainSentence.match(/\s(?:standing|sitting|placed|resting|set|displayed|lying|positioned|shown)\s(?:on|against)\s(.+)$/i)?.[1] ?? prompt.match(/standing on (.+?)\./i)?.[1] ?? 'a cream marble table with softly blurred gold decor behind').trim().slice(0, 200);
+    const sides = sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : '';
+    const okWords = SHAPE_SYNONYMS[shapeWord!.toLowerCase()] ?? [shapeWord!.toLowerCase()];
+    alog(`composed sheet for ${shapeWord}: box=${boxDesc.slice(0, 100)} | product=${product} | scene=${scene.slice(0, 60)}`);
+    // Qwen-Image renders negatives literally ("no hooks" produced hooks), so these prompts only say what IS there.
+    const boxDescClean = boxDesc.replace(/\bmagnetic (closure|lid|flap)\b/gi, 'lift-off lid').replace(/\b(magnetic|magnet|hinged|hinge|clasp|button)\b/gi, '').replace(/\s+/g, ' ').replace(/\s,/g, ',').trim();
+    const closedText = (view: string): string => `A single closed ${shapeWord}-shaped rigid gift box${sides}, lid on and fully closed, ${view}; the whole silhouette is one clean solid ${shapeWord}. The box is ${boxDescClean}, standing on ${scene}. Photorealistic luxury product photography, soft studio light, sharp.`;
+    const openText = `A single ${shapeWord}-shaped rigid two-piece gift box${sides}, open, seen from high above: the ${shapeWord}-shaped base rests flat on the table as a ${shapeWord} tray with walls that follow the ${shapeWord} outline, holding ${product} in a fitted insert; the separate ${shapeWord}-shaped lift-off lid rests flat on the table beside it, with a gap of table between lid and base. The box is ${boxDescClean}, standing on ${scene}. Photorealistic luxury product photography, soft studio light, sharp.`;
+    const specs: { view: string; text: string; w: number; h: number; box: { x: number; y: number; w: number; h: number } }[] = [
+      { view: 'hero', text: closedText('seen from a three-quarter angle slightly from above, filling the frame'), w: 960, h: 864, box: { x: 0, y: 0, w: 666, h: 600 } },
+      { view: 'open', text: openText, w: 960, h: 864, box: { x: 678, y: 0, w: 666, h: 600 } },
+      { view: 'front', text: closedText('seen straight from the front'), w: 704, h: 656, box: { x: 0, y: 612, w: 440, h: 412 } },
+      { view: 'three-quarter', text: closedText('seen from a three-quarter angle'), w: 704, h: 656, box: { x: 452, y: 612, w: 440, h: 412 } },
+      { view: 'top', text: closedText('seen from directly above'), w: 704, h: 656, box: { x: 904, y: 612, w: 440, h: 412 } },
+    ];
+    const baseSeed = fixedSeed ?? Math.floor(Math.random() * 999_999_999) + 1;
+    fixedSeed = undefined;
+    const layers: { input: Buffer; left: number; top: number }[] = [];
+    const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
+    for (const [i, sp] of specs.entries()) {
+      let best: { img: Buffer; score: number } | null = null;
+      for (let t = 1; t <= 3; t++) {
+        try {
+          const img = await renderOnce(sp.text, null, (baseSeed + i * 7919 + (t - 1) * 104729) % 999_999_999 + 1, { w: sp.w, h: sp.h });
+          const chk = await singlePhotoCheck(deps, img, 'image/png', shapeWord);
+          if (process.env.ALEX_DEBUG_PANELS) fs.writeFileSync(`/tmp/panel-${i + 1}-${t}.png`, img);
+          const problems: string[] = [];
+          if (!okWords.some((w) => chk.shape.includes(w))) problems.push(`shape ${chk.shape}`);
+          if (!chk.allPartsShape) problems.push('a part is not ' + shapeWord);
+          if (chk.lid && chk.lid !== 'none' && !okWords.some((w) => chk.lid.includes(w))) problems.push(`lid ${chk.lid}`);
+          if (sp.view === 'open' ? !chk.productInside : !chk.closed) problems.push(sp.view === 'open' ? 'no product inside' : 'not a closed box');
+          if (chk.extraParts) problems.push('extra parts');
+          if (expectedText.length ? editDistance(norm(chk.text), norm(expectedText.join(''))) > 2 : norm(chk.text).length > 2) problems.push(`text "${chk.text}"`);
+          alog(`composed panel ${i + 1} (${sp.view}) try ${t}: ${problems.length ? problems.join(', ') : 'ok'}`);
+          if (!best || problems.length < best.score) best = { img, score: problems.length };
+          if (problems.length === 0) break;
+        } catch (err) {
+          alog(`composed panel ${i + 1} try ${t} failed: ${(err as Error).message}`);
+        }
+      }
+      if (!best) throw new Error(`panel ${i + 1} could not be rendered`);
+      layers.push({ input: await sharp(best.img).resize(sp.box.w, sp.box.h, { fit: 'cover' }).png().toBuffer(), left: sp.box.x, top: sp.box.y });
+    }
+    finalSeed = baseSeed;
+    return sharp({ create: { width: 1344, height: 1024, channels: 3, background: '#ffffff' } }).composite(layers).png().toBuffer();
   };
 
   // ── 2b. shape reference from the real photo library (any shape we have a photo of)
@@ -1150,15 +1231,18 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     if (stage2.ok) bytes = stage2.bytes;
     else { bytes = stage1.bytes; note = ' (the open view did not render cleanly, so the closed box was sent)'; }
   } else {
-    let r = shapeRef
-      ? await renderChecked(`Use the reference image only for the box SHAPE (a closed ${shapeWord}-shaped box, lid seated) and proportions; new colours, finish and logo exactly as described: ${prompt}`, shapeRef, 2)
-      : { bytes: Buffer.alloc(0), ok: false };
-    if (shapeRef) alog(`library shape reference render ${r.ok ? 'ok' : 'rejected → text engine'}`);
-    if (!r.ok) r = await renderChecked(withTrigger(prompt), null, 3);
-    bytes = r.bytes;
-    // Special-shape sheet still has off-shape panels: re-render just those panels one by one and paste them in
-    // (Qwen-Image draws a single triangular tray fine but keeps slipping a square box into a five-panel grid).
-    if (sheetMode && specialShape && shapeWord) bytes = await repairPanels(bytes);
+    if (sheetMode && specialShape && shapeWord && engine === 'qwen' && process.env.ALEX_SHEET_COMPOSE === '1') {
+      // experimental: every panel rendered singly (closed views came out with lids askew; the grid + repair below does better)
+      bytes = await composeSpecialSheet();
+    } else {
+      let r = shapeRef
+        ? await renderChecked(`Use the reference image only for the box SHAPE (a closed ${shapeWord}-shaped box, lid seated) and proportions; new colours, finish and logo exactly as described: ${prompt}`, shapeRef, 2)
+        : { bytes: Buffer.alloc(0), ok: false };
+      if (shapeRef) alog(`library shape reference render ${r.ok ? 'ok' : 'rejected → text engine'}`);
+      if (!r.ok) r = await renderChecked(withTrigger(prompt), null, 3);
+      bytes = r.bytes;
+      if (sheetMode && specialShape && shapeWord) bytes = await repairPanels(bytes);
+    }
   }
 
   // ── 4. size badge (sheet), watermark, store, post
@@ -1199,11 +1283,12 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   if (lastMockups.size > 500) lastMockups.delete(lastMockups.keys().next().value as string);
   if (asPhoto) {
     photoFallback.add(conversationId);
-    return `Picture sent to the customer showing: ${desc}. Reply in at most 12 words: one short line like "Here is a <product>", then one short question about the next missing detail. Never use the words mockup, render, generated, concept or design; it is simply a picture of the product.${note}`;
+    const known = [expectedText.length ? `brand text "${expectedText.join(', ')}" (already printed on it)` : '', sizeLabelFrom(customerWords) ?? sizeLabelFrom(desc) ? 'the size' : ''].filter(Boolean).join(' and ');
+    return `Picture sent to the customer showing: ${desc}.${known ? ` Already given by the customer: ${known}; never ask about those.` : ''} Reply in at most 12 words: one short line like "Here is a <product>", then one short question about the next missing detail (quantity, then printing or deadline). Never use the words mockup, render, generated, concept or design, and never say it is from our gallery, our work or a sample we made; just "Here is a <product>".${note}`;
   }
   return ref
     ? `Mockup sent to the customer, built on the image they shared (their own box/design). Reply in at most 15 words: one short line that this is the mockup from their design, then one short question.${note}`
-    : `${sheetMode ? 'Mockup presentation sheet sent to the customer (closed box, open view with the product inside, and side views, with its size). ' : 'Mockup image sent to the customer. '}Reply in at most 15 words: one short line that this is their mockup, then one short question (changes, or the next missing detail). No adjectives, no disclaimers.${note}`;
+    : `${sheetMode ? 'Mockup presentation sheet sent to the customer (closed box, open view with the product inside, and side views, with its size). ' : 'Mockup image sent to the customer. '}Reply in at most 15 words: one short line that this is their mockup, then one short question (changes, or the next missing detail such as quantity).${expectedText.length ? ` The brand text "${expectedText.join(', ')}" is already on it; never ask whether to add it.` : ''} No adjectives, no disclaimers.${note}`;
 }
 
 async function handover(deps: AppDeps, conversationId: string, reason: string, summary: string): Promise<string> {
@@ -1278,8 +1363,11 @@ async function runTool(deps: AppDeps, conversationId: string, call: ToolCall, la
         }
         return res;
       }
-      case 'make_mockup':
-        return await makeMockup(deps, conversationId, String(args.prompt ?? ''), wmText, convoText);
+      case 'make_mockup': {
+        // The customer asked for a photo/picture (not a mockup): render it, but never call it a mockup.
+        const askedPhoto = /\b(photo|picture|pic|image|tasveer|tasvir)s?\b/i.test(lastVisitorText) && !/\b(mock-?up|render|3d|concept)\b/i.test(lastVisitorText);
+        return await makeMockup(deps, conversationId, String(args.prompt ?? ''), wmText, convoText, askedPhoto);
+      }
       case 'handover': {
         const customerText = convoText.split('\n').filter((l) => l.startsWith('Customer:')).join(' ') + ' ' + lastVisitorText;
         if (!CONTACT_RE.test(customerText)) return 'Not handed over yet: the customer has not shared an email or phone number. Ask for their name and email (or phone) first; the handover happens once you have them.';
@@ -1522,8 +1610,10 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       {
         const lastRow = history[history.length - 1];
         const botBefore = history.some((m) => m.sender_type === 'BOT' && m !== lastRow);
-        if (lastRow?.sender_type === 'VISITOR' && lastRow.kind === 'TEXT' && botBefore && /^(hi+|hello+|helo+|hallo+|hellow+|hey+|hii+|hy|yo|salam|assalam[\w ]*|aoa|good (morning|afternoon|evening))[.!\s]*$/i.test((lastRow.body ?? '').trim())) {
-          const salam = /salam|aoa/i.test(lastRow.body ?? '');
+        const greetBody = (lastRow?.body ?? '').trim();
+        const isGreet = lastRow?.sender_type === 'VISITOR' && lastRow.kind === 'TEXT' && /^(hi+|hello+|helo+|hallo+|hellow+|hey+|hii+|hy|yo|salam|assalam[\w ]*|aoa|good (morning|afternoon|evening))[.!\s]*$/i.test(greetBody);
+        const salam = /salam|aoa/i.test(greetBody);
+        if (isGreet && (botBefore || salam)) {
           const lines = salam
             ? ['Walaikum assalam! Aap kya pack karna chahte hain? Size, material aur quote mein madad kar sakta hoon.', 'Walaikum assalam! Batayein kis product ke liye boxes chahiyein?']
             : ['Hi! What are you looking to pack? I can help with sizes, materials and a quick quote.', 'Hello! Tell me what product you are packing and I will guide you.'];
