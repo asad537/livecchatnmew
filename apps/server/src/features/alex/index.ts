@@ -49,8 +49,27 @@ interface PhotoRow {
   mime: string;
   size: number;
   path: string;
-  caption: string;
+  caption: string; tags?: string | null;
 }
+
+// Box styles / product types a customer may ask to see, with the words a caption may use for them.
+const PHOTO_TYPES: Record<string, string[]> = {
+  gable: ['gable'], mailer: ['mailer', 'mailing'], magnetic: ['magnetic', 'magnet'], rigid: ['rigid', 'setup box'],
+  tuck: ['tuck'], sleeve: ['sleeve', 'slipcase'], drawer: ['drawer', 'slide'], pillow: ['pillow'], pizza: ['pizza'],
+  cereal: ['cereal'], display: ['display', 'counter'], hexagon: ['hexagon', 'hexagonal'], tube: ['tube', 'cylinder', 'cylindrical'],
+  bag: ['bag', 'shopping bag', 'paper bag'], pouch: ['pouch', 'sachet'], perfume: ['perfume', 'fragrance', 'cologne'],
+  candle: ['candle'], cosmetic: ['cosmetic', 'skincare', 'beauty', 'makeup'], soap: ['soap'], jewelry: ['jewelry', 'jewellery', 'ring box', 'necklace'],
+  cake: ['cake'], cupcake: ['cupcake'], donut: ['donut', 'doughnut'], burger: ['burger'], fries: ['fries', 'fry'],
+  chocolate: ['chocolate', 'truffle'], cbd: ['cbd', 'hemp'], vape: ['vape', 'cartridge'], shoe: ['shoe', 'sneaker', 'footwear'],
+  apparel: ['apparel', 'shirt', 'clothing', 'garment'], shirt: ['shirt', 'apparel', 'clothing'], bottle: ['bottle'], wine: ['wine'],
+  tea: ['tea'], coffee: ['coffee'], toy: ['toy'], electronics: ['electronics', 'gadget'], phone: ['phone'], watch: ['watch'],
+  subscription: ['subscription'], corrugated: ['corrugated'], shipping: ['shipping', 'mailer'], label: ['label', 'sticker'],
+  sticker: ['sticker', 'label'], noodle: ['noodle', 'takeout'], takeout: ['takeout', 'noodle', 'take-out'], popcorn: ['popcorn'],
+  sandwich: ['sandwich'], sushi: ['sushi'], macaron: ['macaron'], cookie: ['cookie', 'biscuit'], chip: ['chip'], lipstick: ['lipstick'],
+  hair: ['hair extension', 'hair'], wig: ['wig', 'hair'], eyelash: ['eyelash', 'lash'], lash: ['lash', 'eyelash'], serum: ['serum', 'dropper'],
+  cigarette: ['cigarette', 'pre-roll', 'preroll'], book: ['book'], folder: ['folder'], envelope: ['envelope'], card: ['card'],
+  hanger: ['hang tab', 'hanger'], window: ['window'], handle: ['handle'], heart: ['heart'],
+};
 interface ExampleRow {
   dialogue: string;
 }
@@ -286,10 +305,10 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
   let rows: PhotoRow[] = [];
   try {
     rows = await deps.db.all<PhotoRow>(
-      `SELECT id, website, company_logo, original_name, mime, size, path, caption FROM alex_photos
+      `SELECT id, website, company_logo, original_name, mime, size, path, caption, tags FROM alex_photos
         WHERE is_product = 1 AND MATCH(caption, tags) AGAINST (? IN NATURAL LANGUAGE MODE)
         ORDER BY MATCH(caption, tags) AGAINST (? IN NATURAL LANGUAGE MODE) DESC, RAND()
-        LIMIT 8`,
+        LIMIT 20`,
       [terms, terms],
     );
   } catch (err) {
@@ -299,18 +318,45 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
   // long query often buries them), then let the model choose.
   const PRODUCT_WORDS = ['perfume', 'candle', 'mailer', 'rigid', 'pouch', 'label', 'cosmetic', 'soap', 'jewelry', 'jewellery', 'food', 'bakery', 'cake', 'chocolate', 'cbd', 'vape', 'shoe', 'apparel', 'tshirt', 'shirt', 'bottle', 'wine', 'tea', 'coffee', 'pizza', 'cereal', 'display', 'window', 'magnetic', 'drawer', 'sleeve', 'tuck', 'kraft', 'corrugated', 'shipping', 'gift', 'pillow', 'hexagon', 'round', 'tube', 'bag', 'subscription', 'medical', 'pharma', 'toy', 'electronics', 'phone', 'watch', 'bakery', 'cupcake', 'donut', 'burger', 'fries'];
   const q = query.toLowerCase();
+  const ownHost = wmText.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase();
+  // Box styles / product types named in the request: the photo MUST show that type
+  // (a "gable box" request once got a magnetic rigid box because "kraft" matched).
+  const typeWords = Object.keys(PHOTO_TYPES).filter((k) => PHOTO_TYPES[k].some((syn) => new RegExp(`\\b${syn}(e?s)?\\b`, 'i').test(q)));
+  const matchesType = (r: PhotoRow, k: string): boolean => {
+    const text = `${r.caption} ${r.tags ?? ''}`;
+    return PHOTO_TYPES[k].some((syn) => new RegExp(`\\b${syn}(e?s)?\\b`, 'i').test(text));
+  };
+  for (const k of typeWords.slice(0, 2)) {
+    for (const syn of PHOTO_TYPES[k].slice(0, 3)) {
+      try {
+        const extra = await deps.db.all<PhotoRow>(
+          `SELECT id, website, company_logo, original_name, mime, size, path, caption, tags FROM alex_photos
+             WHERE is_product = 1 AND (caption LIKE ? OR tags LIKE ?)
+             ORDER BY (website = ?) DESC, RAND() LIMIT 12`,
+          [`%${syn}%`, `%${syn}%`, `site:${ownHost}`],
+        );
+        for (const r of extra) if (!rows.some((x) => x.id === r.id)) rows.push(r);
+      } catch { /* ignore */ }
+    }
+  }
   const words = PRODUCT_WORDS.filter((w) => q.includes(w));
-  for (const w of words.slice(0, 3)) {
+  for (const w of words.filter((w) => !typeWords.includes(w)).slice(0, 2)) {
     try {
       const extra = await deps.db.all<PhotoRow>(
-        `SELECT id, website, company_logo, original_name, mime, size, path, caption FROM alex_photos WHERE is_product = 1 AND (caption LIKE ? OR tags LIKE ?) ORDER BY RAND() LIMIT 5`,
+        `SELECT id, website, company_logo, original_name, mime, size, path, caption, tags FROM alex_photos WHERE is_product = 1 AND (caption LIKE ? OR tags LIKE ?) ORDER BY RAND() LIMIT 5`,
         [`%${w}%`, `%${w}%`],
       );
       for (const r of extra) if (!rows.some((x) => x.id === r.id)) rows.push(r);
     } catch { /* ignore */ }
   }
+  if (typeWords.length) {
+    const all = rows.filter((r) => typeWords.every((k) => matchesType(r, k)));
+    const any = rows.filter((r) => typeWords.some((k) => matchesType(r, k)));
+    const kept = all.length ? all : any;
+    alog(`photo type filter [${typeWords.join(', ')}]: ${kept.length} of ${rows.length} candidates mention the type`);
+    rows = kept;
+  }
   // Photos crawled from another of our websites carry that brand's name: use them only when nothing of our own matches.
-  const ownHost = wmText.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/.*$/, '').toLowerCase();
   // Sites whose photos are only a fallback (ALEX_PHOTO_FALLBACK_SITES, default thecustomboxes.com); other crawled sites rank with our own library.
   const fallbackSites = (process.env.ALEX_PHOTO_FALLBACK_SITES || 'thecustomboxes.com').toLowerCase().split(',').map((h) => h.trim()).filter(Boolean);
   const isForeign = (r: PhotoRow): boolean => Boolean(r.website && r.website.startsWith('site:') && r.website !== `site:${ownHost}`);
@@ -334,7 +380,7 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
     const list = cands.map((r, i) => `${i + 1}) ${r.caption.slice(0, 220)}`).join('\n');
     const pick = await chat(deps, [
       { role: 'system', content: 'You pick product photos for a packaging sales chat. Answer with ONE number only.' },
-      { role: 'user', content: `Customer wants to see: "${query}"${words.length ? ` (product type keywords: ${words.join(', ')})` : ''}\nCandidate photo captions:\n${list}\n\nWhich number shows the SAME product type (e.g. perfume box, mailer box, candle box, pouch) and best matches the request? Prefer captions that mention the product type keywords. Reply 0 if none truly matches.` },
+      { role: 'user', content: `Customer wants to see: "${query}"${words.length ? ` (product type keywords: ${words.join(', ')})` : ''}\nCandidate photo captions:\n${list}\n\nWhich number shows the SAME product type / box style (e.g. perfume box, mailer box, gable box, candle box, pouch) and best matches the request?${typeWords.length ? ` The caption MUST describe a ${typeWords.join(' / ')} — a different box style is NOT a match even if the colour or material fits. Prefer a photo where that style is the main or only product shown.` : ''} Reply 0 if none truly matches.` },
     ], false);
     const n = parseInt((pick.content ?? '').match(/\d+/)?.[0] ?? '0', 10);
     alog(`photo pick for "${query}": ${n} of ${cands.length}`);
