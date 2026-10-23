@@ -524,8 +524,8 @@ async function runComfy(base: string, workflow: Record<string, { class_type: str
 }
 
 /** Vision QA (structured): silhouette, colour, text, one box / one lid, lid state. */
-async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], summary: string, openRequested = false, sheet = false): Promise<{ ok: boolean; why: string }> {
-  if (sheet) return checkSheet(deps, png, expectedText, summary);
+async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], summary: string, openRequested = false, sheet = false, shapeWord?: string): Promise<{ ok: boolean; why: string }> {
+  if (sheet) return checkSheet(deps, png, expectedText, summary, shapeWord);
   const out = await chat(deps, [
     { role: 'system', content: 'You are a strict QA checker for packaging mockup renders. Reply with ONLY a JSON object, no prose.' },
     { role: 'user', content: [
@@ -580,7 +580,35 @@ function parseQaJson(raw: string): Record<string, unknown> {
 }
 
 /** QA for a presentation sheet: several panels of ONE box design (main closed view, open view with product, side views). */
-async function checkSheet(deps: AppDeps, png: Buffer, expectedText: string[], summary: string): Promise<{ ok: boolean; why: string }> {
+// Words the vision model may use for each requested special shape.
+const SHAPE_SYNONYMS: Record<string, string[]> = {
+  heart: ['heart'], round: ['round', 'circle', 'circular', 'cylinder', 'tube'], circular: ['round', 'circle', 'circular', 'cylinder', 'tube'], circle: ['round', 'circle', 'circular', 'cylinder', 'tube'],
+  tube: ['tube', 'cylinder', 'round', 'circle', 'circular'], cylinder: ['tube', 'cylinder', 'round', 'circle', 'circular'], cylindrical: ['tube', 'cylinder', 'round', 'circle', 'circular'],
+  hexagon: ['hexagon', 'hexagonal'], hexagonal: ['hexagon', 'hexagonal'], octagon: ['octagon', 'octagonal'], octagonal: ['octagon', 'octagonal'],
+  triangle: ['triangle', 'triangular'], triangular: ['triangle', 'triangular'], pyramid: ['pyramid', 'triangle', 'triangular'],
+  pillow: ['pillow'], oval: ['oval', 'ellipse', 'elliptical'], star: ['star'], diamond: ['diamond', 'rhombus'],
+};
+/** Second, per-panel QA for special shapes: the global "same_box" judgement misses one odd panel (a triangle sheet once passed with a rectangular open view). */
+async function checkPanelShapes(deps: AppDeps, png: Buffer, shapeWord: string): Promise<string | null> {
+  const out = await chat(deps, [
+    { role: 'system', content: 'You describe packaging photos precisely. Reply with ONLY a JSON object, no prose.' },
+    { role: 'user', content: [
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
+      { type: 'text', text:
+        'This image is a grid of 5 photos of a box: top row = one large photo on the left and one photo on the right (the box open, lid off); bottom row = three small photos. ' +
+        'For EACH of the 5 panels name the outline shape of the box body (and its lid, if visible) as seen from above: one of heart, round, hexagon, octagon, triangle, square, rectangle, oval, star, diamond, pillow, tube, pyramid, other. ' +
+        'Look at the actual outline in that panel, not at the other panels. Return {"panels":[{"pos":"top-left","shape":"..."},{"pos":"top-right","shape":"..."},{"pos":"bottom-left","shape":"..."},{"pos":"bottom-middle","shape":"..."},{"pos":"bottom-right","shape":"..."}]}' },
+    ] as unknown as string },
+  ], false);
+  const j = parseQaJson((out.content ?? '').trim()) as { panels?: { pos?: string; shape?: string }[] };
+  if (!Array.isArray(j.panels) || j.panels.length === 0) return null;
+  const ok = SHAPE_SYNONYMS[shapeWord.toLowerCase()] ?? [shapeWord.toLowerCase()];
+  const bad = j.panels.filter((pn) => pn.shape && !ok.some((w) => String(pn.shape).toLowerCase().includes(w)));
+  alog(`panel shapes for ${shapeWord}: ${j.panels.map((pn) => `${pn.pos}=${pn.shape}`).join(', ')}`);
+  if (bad.length === 0) return null;
+  return `panel(s) ${bad.map((pn) => `${pn.pos} (${pn.shape})`).join(', ')} do not show a ${shapeWord}-shaped box; every panel, including the open view, must show the ${shapeWord} shape`;
+}
+async function checkSheet(deps: AppDeps, png: Buffer, expectedText: string[], summary: string, shapeWord?: string): Promise<{ ok: boolean; why: string }> {
   const out = await chat(deps, [
     { role: 'system', content: 'You are a strict QA checker for packaging presentation sheets. Reply with ONLY a JSON object, no prose.' },
     { role: 'user', content: [
@@ -614,6 +642,10 @@ async function checkSheet(deps: AppDeps, png: Buffer, expectedText: string[], su
   if (j.window_ok === false) problems.push('the closed box must show the requested window with the product visible through it');
   const defects = String(j.defects ?? '').trim();
   if (defects && !/^(none|no|n\/a|-)/i.test(defects)) problems.push(defects.slice(0, 80));
+  if (shapeWord) {
+    const bad = await checkPanelShapes(deps, png, shapeWord).catch((err) => { alog(`panel shape check failed: ${(err as Error).message}`); return null; });
+    if (bad) problems.push(bad);
+  }
   return { ok: problems.length === 0, why: problems.length ? problems.join('; ') : 'ok' };
 }
 
@@ -874,7 +906,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const renderChecked = async (text: string, refImg: { name: string; w: number; h: number } | null, attempts: number, qaSummary?: string): Promise<{ bytes: Buffer; ok: boolean }> => {
     let bytes = await renderOnce(text, refImg, fixedSeed);
     fixedSeed = undefined;
-    let qa = await checkRender(deps, bytes, expectedText, qaSummary ?? text, openRequested, sheetMode).catch((err) => ({ ok: true, why: `qa skipped: ${(err as Error).message}` }));
+    let qa = await checkRender(deps, bytes, expectedText, qaSummary ?? text, openRequested, sheetMode, specialShape ? shapeWord : undefined).catch((err) => ({ ok: true, why: `qa skipped: ${(err as Error).message}` }));
     alog(`mockup QA ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
     const score = (why: string): number => (why === 'ok' ? 0 : why.split(';').length);
     let best = { bytes, ok: qa.ok, score: score(qa.why), seed: lastSeed };
@@ -888,7 +920,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
         if (pos.content?.trim()) fix = pos.content.trim().slice(0, 200);
       } catch { /* keep raw note */ }
       bytes = await renderOnce(`${text}\nCorrection (the previous render was rejected): ${fix}`, refImg);
-      qa = await checkRender(deps, bytes, expectedText, qaSummary ?? text, openRequested, sheetMode).catch(() => ({ ok: true, why: 'qa skipped' }));
+      qa = await checkRender(deps, bytes, expectedText, qaSummary ?? text, openRequested, sheetMode, specialShape ? shapeWord : undefined).catch(() => ({ ok: true, why: 'qa skipped' }));
       alog(`mockup QA attempt ${i} ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
       if (qa.ok || score(qa.why) < best.score) best = { bytes, ok: qa.ok, score: score(qa.why), seed: lastSeed };
     }
@@ -1385,11 +1417,13 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
             const hadPhoto = convo.some((m) => m.role === 'assistant' && typeof (m as { content: unknown }).content === 'string' && /photo was sent to the customer here:/.test((m as { content: string }).content));
             const PRODUCT_RE = /\b(box|boxes|mailer|mailers|pouch|pouches|sleeve|sleeves|label|labels|bag|bags|carton|cartons|tube|tubes|tray|trays|insert|inserts|packaging|display)\b/i;
             const shortLu = lu.trim().split(/\s+/).length <= 10;
-            const claimsPhoto = /\b(here is|here's|here are|attached|sending|i've sent|i have sent|sent you)\b[^.!?]*\b(photo|picture|image|pic|sample|example|option)s?\b/i.test(out.content ?? '');
+            const claimsPhoto = /\b(here is|here's|here are|attached|sending|i've sent|i have sent|sent you)\b[^.!?]*\b(photo|picture|image|pic|sample|example|option)s?\b/i.test(out.content ?? '')
+              // Roman Urdu promise: "photo bhejta hoon", "tasveer dikhata hoon", "bhej raha hoon"
+              || (/\b(photo|picture|image|pic|tasveer|tasvir|sample)s?\b/i.test(out.content ?? '') && /\b(bhejt[ai]|bhej (raha|rahi)|dikhat[ai]|dikha (raha|rahi)|send kart[ai]|send kar (raha|rahi))\b/i.test(out.content ?? ''));
             const complaint = /\b(you (are|were|said|sent|keep|gave|just)|asked for|i asked|i said|not what|wrong|didn'?t|don'?t|why|instead of)\b/i.test(lu);
             const physicalSample = /\b(physical|real|actual|hard|printed|free) samples?\b|\bsamples? (to|at) my\b|\b(ship|mail|post|courier|deliver) (me )?(a |some |the )?samples?\b|\bsend (me )?(a |some |the )?samples? (to|at|by|home)\b/i.test(lu);
             const morePhotos = hadPhoto && shortLu && /\b(more|another|other|next|different|else|again)\b/i.test(lu);
-            const wantsPhoto = !complaint && !physicalSample && (morePhotos || (/\b(photo|picture|pic|image|example|sample)s?\b/i.test(lu) && (/\b(show|see|have|send|share|look|of)\b/i.test(lu) || hadPhoto))
+            const wantsPhoto = !complaint && !physicalSample && (morePhotos || (/\b(photo|picture|pic|image|example|sample|tasveer|tasvir)s?\b/i.test(lu) && (/\b(show|see|have|send|share|look|of|bhej\w*|dikha\w*|dekh\w*|chahiye|chaiye|chahye|do|dein|den|hai|ha|ki|ka)\b/i.test(lu) || hadPhoto))
               || /\bshow me\b/i.test(lu)
               || (hadPhoto && shortLu && PRODUCT_RE.test(lu) && !wantsMockup)
               || claimsPhoto);
