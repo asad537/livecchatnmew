@@ -390,8 +390,38 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
     try {
       const primary = rows.filter((r) => !isOther(r));
       const fallback = rows.filter(isOther);
-      let chosen = await pickFrom(primary);
-      if (!chosen && fallback.length) { alog('no own photo matched, trying fallback-site photos'); chosen = await pickFrom(fallback); }
+      // Captions can be wrong (a mailer box was captioned "gable box"), so when a product type
+      // was named, the vision model confirms the chosen photo really shows it before it is sent.
+      const confirmType = async (r: PhotoRow): Promise<boolean> => {
+        if (!typeWords.length || !fs.existsSync(r.path)) return true;
+        try {
+          const raw: Buffer = gunzipSync(fs.readFileSync(r.path));
+          const out = await chat(deps, [
+            { role: 'user', content: [
+              { type: 'image_url', image_url: { url: `data:${r.mime || 'image/jpeg'};base64,${raw.toString('base64')}` } },
+              { type: 'text', text: `Does this photo clearly show a ${typeWords.join(' / ')} (as a packaging product type / box style)? Answer YES or NO only.` },
+            ] as unknown as string },
+          ], false);
+          const yes = /^\s*yes/i.test(out.content ?? '');
+          alog(`photo type confirm [${typeWords.join(', ')}] ${r.id}: ${yes ? 'yes' : 'NO'}`);
+          return yes;
+        } catch (err) {
+          alog(`photo type confirm failed: ${(err as Error).message}`);
+          return true;
+        }
+      };
+      const pickConfirmed = async (cands: PhotoRow[]): Promise<PhotoRow | null> => {
+        let pool = cands;
+        for (let i = 0; i < 3 && pool.length; i++) {
+          const c = await pickFrom(pool);
+          if (!c) return null;
+          if (await confirmType(c)) return c;
+          pool = pool.filter((r) => r.id !== c.id);
+        }
+        return null;
+      };
+      let chosen = await pickConfirmed(primary);
+      if (!chosen && fallback.length) { alog('no own photo matched, trying fallback-site photos'); chosen = await pickConfirmed(fallback); }
       rows = chosen ? [chosen] : [];
     } catch (err) {
       alog(`photo pick failed: ${(err as Error).message}`);
