@@ -618,8 +618,101 @@ const SHAPE_SYNONYMS: Record<string, string[]> = {
   triangle: ['triangle', 'triangular'], triangular: ['triangle', 'triangular'], pyramid: ['pyramid', 'triangle', 'triangular'],
   pillow: ['pillow'], oval: ['oval', 'ellipse', 'elliptical'], star: ['star'], diamond: ['diamond', 'rhombus'],
 };
+/** Panel rectangles of a presentation sheet, found from its white gutters (rows/columns that are almost entirely white). */
+async function sheetPanels(png: Buffer): Promise<{ x: number; y: number; w: number; h: number }[]> {
+  const { data, info } = await sharp(png).greyscale().raw().toBuffer({ resolveWithObject: true });
+  const W = info.width, H = info.height;
+  const white = (v: number) => v > 232;
+  const runs = (flags: boolean[], minLen: number): { a: number; b: number }[] => {
+    const out: { a: number; b: number }[] = [];
+    let start = -1;
+    for (let i = 0; i <= flags.length; i++) {
+      const on = i < flags.length && !flags[i];
+      if (on && start < 0) start = i;
+      if (!on && start >= 0) { if (i - start >= minLen) out.push({ a: start, b: i }); start = -1; }
+    }
+    return out;
+  };
+  const rowGutter: boolean[] = new Array(H).fill(false);
+  for (let y = 0; y < H; y++) { let c = 0; for (let x = 0; x < W; x++) if (white(data[y * W + x])) c++; rowGutter[y] = c / W > 0.96; }
+  const panels: { x: number; y: number; w: number; h: number }[] = [];
+  for (const band of runs(rowGutter, Math.round(H * 0.12))) {
+    const colGutter: boolean[] = new Array(W).fill(false);
+    for (let x = 0; x < W; x++) { let c = 0; for (let y = band.a; y < band.b; y++) if (white(data[y * W + x])) c++; colGutter[x] = c / (band.b - band.a) > 0.96; }
+    for (const col of runs(colGutter, Math.round(W * 0.12))) panels.push({ x: col.a, y: band.a, w: col.b - col.a, h: band.b - band.a });
+  }
+  return panels;
+}
+const SHAPE_QUESTION = 'name the outline shape of the box body as seen from above (its footprint), ignoring the lid: one of heart, round, hexagon, octagon, triangle, square, rectangle, oval, star, diamond, pillow, tube, pyramid, other. A box whose base has four corners is "square" or "rectangle" even if its lid is pointed.';
+/** Outline shape of the single box in one photo plus every piece of text printed on it (vision model). */
+async function singlePhotoCheck(deps: AppDeps, img: Buffer, mime = 'image/png'): Promise<{ shape: string; text: string }> {
+  const out = await chat(deps, [
+    { role: 'system', content: 'You describe packaging photos precisely. Reply with ONLY a JSON object, no prose.' },
+    { role: 'user', content: [
+      { type: 'image_url', image_url: { url: `data:${mime};base64,${img.toString('base64')}` } },
+      { type: 'text', text: `For this photo of a box, ${SHAPE_QUESTION} Also transcribe ALL text, letters, initials or monogram letters printed on the box or inside it (not the website watermark), exactly as written, or "" if none. Return {"shape":"...","text":"..."}.` },
+    ] as unknown as string },
+  ], false);
+  const j = parseQaJson((out.content ?? '').trim()) as { shape?: string; text?: string };
+  return { shape: String(j.shape ?? '').toLowerCase(), text: String(j.text ?? '').trim() };
+}
+/** Per-panel shape report for a sheet: panel rectangles (from the white gutters), the shape seen in each, and the indexes that are not the requested shape. */
+async function panelShapeReport(deps: AppDeps, png: Buffer, shapeWord: string): Promise<{ panels: { x: number; y: number; w: number; h: number }[]; shapes: string[]; bad: number[] } | null> {
+  const ok = SHAPE_SYNONYMS[shapeWord.toLowerCase()] ?? [shapeWord.toLowerCase()];
+  const panels = await sheetPanels(png).catch(() => []);
+  if (panels.length < 3 || panels.length > 6) { alog(`sheet panels not detected (${panels.length})`); return null; }
+  const content: unknown[] = [];
+  for (let i = 0; i < panels.length; i++) {
+    const crop = await sharp(png).extract({ left: panels[i].x, top: panels[i].y, width: panels[i].w, height: panels[i].h }).resize({ width: 640, withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
+    content.push({ type: 'text', text: `Photo ${i + 1}:` });
+    content.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${crop.toString('base64')}` } });
+  }
+  content.push({ type: 'text', text: `These are ${panels.length} separate photos of a box (some closed, one may be open with the lid off or lifted). For EACH photo ${SHAPE_QUESTION} Return ONLY {"shapes":["...", ...]} with exactly ${panels.length} entries in order.` });
+  const out = await chat(deps, [
+    { role: 'system', content: 'You describe packaging photos precisely. Reply with ONLY a JSON object, no prose.' },
+    { role: 'user', content: content as unknown as string },
+  ], false);
+  const j = parseQaJson((out.content ?? '').trim()) as { shapes?: string[] };
+  if (!Array.isArray(j.shapes) || j.shapes.length !== panels.length) { alog(`panel crop check unusable (${panels.length} panels, shapes=${JSON.stringify(j.shapes ?? null)})`); return null; }
+  const shapes = j.shapes.map((sh) => String(sh).toLowerCase());
+  alog(`panel shapes (crops) for ${shapeWord}: ${shapes.join(', ')}`);
+  const bad = shapes.map((sh, i) => (ok.some((w) => sh.includes(w)) ? -1 : i)).filter((i) => i >= 0);
+  return { panels, shapes, bad };
+}
 /** Second, per-panel QA for special shapes: the global "same_box" judgement misses one odd panel (a triangle sheet once passed with a rectangular open view). */
 async function checkPanelShapes(deps: AppDeps, png: Buffer, shapeWord: string): Promise<string | null> {
+  const report = await panelShapeReport(deps, png, shapeWord).catch((err) => { alog(`panel report failed: ${(err as Error).message}`); return null; });
+  if (report) {
+    if (report.bad.length === 0) return null;
+    return `panel(s) ${report.bad.map((i) => `${i + 1} (${report.shapes[i]})`).join(', ')} show a box that is not ${shapeWord}-shaped; every panel, including the open view, must show a ${shapeWord}-shaped base and lid`;
+  }
+  const ok = SHAPE_SYNONYMS[shapeWord.toLowerCase()] ?? [shapeWord.toLowerCase()];
+  const panels: { x: number; y: number; w: number; h: number }[] = [];
+  if (panels.length >= 3 && panels.length <= 6) {
+    const content: unknown[] = [];
+    for (let i = 0; i < panels.length; i++) {
+      const crop = await sharp(png).extract({ left: panels[i].x, top: panels[i].y, width: panels[i].w, height: panels[i].h }).resize({ width: 640, withoutEnlargement: true }).jpeg({ quality: 85 }).toBuffer();
+      content.push({ type: 'text', text: `Photo ${i + 1}:` });
+      content.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${crop.toString('base64')}` } });
+    }
+    content.push({ type: 'text', text:
+      `These are ${panels.length} separate photos of a box (some closed, one may be open with the lid off or lifted). For EACH photo name the outline shape of the box body as seen from above (its footprint), ignoring the lid: one of heart, round, hexagon, octagon, triangle, square, rectangle, oval, star, diamond, pillow, tube, pyramid, other. ` +
+      `A box whose base has four corners is "square" or "rectangle" even if its lid is pointed. Return ONLY {"shapes":["...", ...]} with exactly ${panels.length} entries in order.` });
+    const out = await chat(deps, [
+      { role: 'system', content: 'You describe packaging photos precisely. Reply with ONLY a JSON object, no prose.' },
+      { role: 'user', content: content as unknown as string },
+    ], false);
+    const j = parseQaJson((out.content ?? '').trim()) as { shapes?: string[] };
+    if (Array.isArray(j.shapes) && j.shapes.length === panels.length) {
+      alog(`panel shapes (crops) for ${shapeWord}: ${j.shapes.join(', ')}`);
+      const bad = j.shapes.map((sh, i) => ({ sh: String(sh).toLowerCase(), i })).filter((e) => !ok.some((w) => e.sh.includes(w)));
+      if (bad.length === 0) return null;
+      return `panel(s) ${bad.map((e) => `${e.i + 1} (${e.sh})`).join(', ')} show a box that is not ${shapeWord}-shaped; every panel, including the open view, must show a ${shapeWord}-shaped base and lid`;
+    }
+    alog(`panel crop check unusable (${panels.length} panels, shapes=${JSON.stringify(j.shapes ?? null)}), falling back to grid check`);
+  } else {
+    alog(`sheet panels not detected (${panels.length}), falling back to grid check`);
+  }
   const out = await chat(deps, [
     { role: 'system', content: 'You describe packaging photos precisely. Reply with ONLY a JSON object, no prose.' },
     { role: 'user', content: [
@@ -632,7 +725,6 @@ async function checkPanelShapes(deps: AppDeps, png: Buffer, shapeWord: string): 
   ], false);
   const j = parseQaJson((out.content ?? '').trim()) as { panels?: { pos?: string; shape?: string }[] };
   if (!Array.isArray(j.panels) || j.panels.length === 0) return null;
-  const ok = SHAPE_SYNONYMS[shapeWord.toLowerCase()] ?? [shapeWord.toLowerCase()];
   const bad = j.panels.filter((pn) => pn.shape && !ok.some((w) => String(pn.shape).toLowerCase().includes(w)));
   alog(`panel shapes for ${shapeWord}: ${j.panels.map((pn) => `${pn.pos}=${pn.shape}`).join(', ')}`);
   if (bad.length === 0) return null;
@@ -767,13 +859,13 @@ const lastMockups = new Map<string, { prompt: string; seed: number; at: number }
 const NEW_BOX_RE = /\b(another|new|second|other|separate|next) (box|product|packaging|design|item|mockup)\b|\bstart (over|fresh|again)\b|\bfrom scratch\b|\bforget (that|the previous)\b/i;
 // Wait lines used when the customer asked for a photo we do not have: the picture is rendered, but never called a mockup.
 const PHOTO_WAIT_MSGS = [
-  'One moment, let me get a picture of that for you.',
+  'One moment, let me get a picture of that for you, it can take a minute or two.',
   'Sure, pulling up a picture for you, give me a minute.',
   'Let me grab a picture of that, one minute please.',
 ];
 const photoFallback = new Set<string>();
 const MOCKUP_WAIT_MSGS = [
-  'Sure, creating your mockup now, it takes about a minute.',
+  'Sure, creating your mockup now, it can take a minute or two.',
   'On it, your mockup is being generated, give me a moment.',
   'Working on the updated mockup now, one minute please.',
   'Let me render that for you, it takes around a minute.',
@@ -836,7 +928,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const customerWordsEarly = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-4).join(' ');
   const openEarly = OPEN_RE.test(desc + ' ' + customerWordsEarly) && OPEN_RE.test(customerWordsEarly);
   if (specialShape && sheetMode) {
-    prompt = `All five photos show one and the same ${shapeWord}-shaped rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}: in the closed views, the open view and the three small views alike, the base and the lid are both ${shapeWord}-shaped and the whole silhouette is a ${shapeWord}; in the open view the ${shapeWord}-shaped lid is lifted off and rests beside the ${shapeWord}-shaped base. ${prompt}`;
+    prompt = `All five photos show one and the same ${shapeWord}-shaped rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}: in the closed views, the open view and the three small views alike, the base and the lid are both ${shapeWord}-shaped and the whole silhouette is a ${shapeWord}; in the open view the ${shapeWord}-shaped lid is lifted off and rests beside the ${shapeWord}-shaped base, which is seen from above as a ${shapeWord}-shaped tray holding the product; there is no hinged lid and no rectangular or square box anywhere in the image. ${prompt}`;
   } else if (specialShape) {
     prompt = openEarly
       ? `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}, with a ${shapeWord}-shaped lid that has its own side walls (a shallow ${shapeWord} tray, not a flat sheet) and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`
@@ -879,7 +971,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   };
   let lastSeed = 0;
   let finalSeed = 0;
-  const renderOnce = async (textIn: string, refImg: { name: string; w: number; h: number } | null, seedIn?: number): Promise<Buffer> => {
+  const renderOnce = async (textIn: string, refImg: { name: string; w: number; h: number } | null, seedIn?: number, dims?: { w: number; h: number }): Promise<Buffer> => {
     let text = textIn;
     const prefix = `alex-${Math.random().toString(16).slice(2, 10)}`;
     const seed = seedIn ?? Math.floor(Math.random() * 999_999_999) + 1;
@@ -889,9 +981,9 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       // It prints quote characters literally, so pass the brand text bare and spell it out once.
       const bare = text.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'");
       const spelled = expectedText.length
-        ? ` The box is printed with the brand name ${expectedText.join(' and ')} only; no other words, letters, initials, monograms, emblems, marks or small secondary lines under the name anywhere on the box${sheetMode ? ', and no numbers, labels or other text anywhere in the image' : ''}.`
+        ? ` Printed on the box, centered: the brand name ${expectedText.join(' and ')}. Nothing else is printed anywhere on the box: no other words, letters, initials, monograms, emblems, marks or small secondary lines under the name${sheetMode ? ', and no numbers, labels or other text anywhere in the image' : ''}.`
         : sheetMode ? ' No readable text on the box and no numbers, labels or text anywhere in the image.' : '';
-      text = bare + spelled + (sheetMode ? ' Every panel shows the identical box; nothing else besides the box, its insert and its product.' : ' Exactly one box in the frame on an empty seamless backdrop, nothing else in the picture.');
+      text = bare + spelled + (sheetMode && !dims ? ' Every panel shows the identical box; nothing else besides the box, its insert and its product.' : dims ? ' Exactly one box in the frame, nothing else besides the box, its insert and its product.' : ' Exactly one box in the frame on an empty seamless backdrop, nothing else in the picture.');
       const wq: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
         '1': { class_type: 'UNETLoader', inputs: { unet_name: 'qwen_image_fp8_e4m3fn.safetensors', weight_dtype: 'default' } },
         '2': { class_type: 'CLIPLoader', inputs: { clip_name: 'qwen_2.5_vl_7b_fp8_scaled.safetensors', type: 'qwen_image', device: 'default' } },
@@ -900,7 +992,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
         '12': { class_type: 'ModelSamplingAuraFlow', inputs: { shift: 3.1, model: ['11', 0] } },
         '4': { class_type: 'CLIPTextEncode', inputs: { text, clip: ['2', 0] } },
         '5': { class_type: 'CLIPTextEncode', inputs: { text: ' ', clip: ['2', 0] } },
-        '6': { class_type: 'EmptySD3LatentImage', inputs: { width: sheetMode ? 1344 : 1152, height: sheetMode ? 1024 : 864, batch_size: 1 } },
+        '6': { class_type: 'EmptySD3LatentImage', inputs: { width: dims?.w ?? (sheetMode ? 1344 : 1152), height: dims?.h ?? (sheetMode ? 1024 : 864), batch_size: 1 } },
         '8': { class_type: 'KSampler', inputs: { seed, steps: qwenSteps, cfg: 1.0, sampler_name: 'euler', scheduler: 'simple', denoise: 1.0, model: ['12', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0] } },
         '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['3', 0] } },
         '10': { class_type: 'SaveImage', inputs: { filename_prefix: prefix, images: ['9', 0] } },
@@ -959,6 +1051,44 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     return { bytes: best.bytes, ok: best.ok };
   };
 
+  const repairPanels = async (sheet: Buffer): Promise<Buffer> => {
+    const report = await panelShapeReport(deps, sheet, shapeWord!).catch(() => null);
+    if (!report || report.bad.length === 0 || report.bad.length > 4) return sheet;
+    const mainSentence = prompt.match(/top-left:\s*(.+?)(?:\.\s|$)/i)?.[1] ?? '';
+    const boxDesc = (mainSentence.replace(/^(a|an)\s+(closed\s+)?/i, '').replace(/\s(standing|sitting|placed|resting|set|displayed|lying|positioned|shown)\s(on|against)\b.*$/i, '').trim() || desc).slice(0, 400);
+    alog(`panel repair box description: ${boxDesc.slice(0, 160)}`);
+    const product = (prompt.match(/showing (.+?) inside/i)?.[1] ?? 'the product').trim().slice(0, 120);
+    const sides = sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : '';
+    const views = ['seen from a three-quarter angle', 'open', 'seen straight from the front', 'seen from a three-quarter angle', 'seen from directly above'];
+    const okWords = SHAPE_SYNONYMS[shapeWord!.toLowerCase()] ?? [shapeWord!.toLowerCase()];
+    let out = sheet;
+    for (const idx of report.bad) {
+      const pn = report.panels[idx];
+      const view = views[idx] ?? views[3];
+      const text = view === 'open'
+        ? `A single ${shapeWord}-shaped rigid gift box${sides}, open: its ${shapeWord}-shaped base seen from a high three-quarter angle as a ${shapeWord} tray holding ${product} in a fitted insert, and its separate ${shapeWord}-shaped lid lying flat on the table beside it; the base and the lid both have the ${shapeWord} outline. The box is ${boxDesc}. Photorealistic luxury product photography, soft studio light, sharp.`
+        : `A single closed ${shapeWord}-shaped rigid gift box${sides}, lid seated, ${view}, the whole silhouette a ${shapeWord}. The box is ${boxDesc}. Photorealistic luxury product photography, soft studio light, sharp.`;
+      const k = 1024 / Math.max(pn.w, pn.h);
+      const rw = Math.max(512, Math.round((pn.w * k) / 16) * 16), rh = Math.max(512, Math.round((pn.h * k) / 16) * 16);
+      for (let t = 1; t <= 2; t++) {
+        try {
+          const img = await renderOnce(text, null, undefined, { w: rw, h: rh });
+          const chk = await singlePhotoCheck(deps, img);
+          const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const textOk = expectedText.length ? norm(chk.text) === norm(expectedText.join('')) : norm(chk.text).length <= 2;
+          alog(`panel ${idx + 1} (${view}) re-render ${t}: shape=${chk.shape} text="${chk.text}"${textOk ? '' : ' (text rejected)'}`);
+          if (!okWords.some((w) => chk.shape.includes(w)) || !textOk) continue;
+          const patch = await sharp(img).resize(pn.w, pn.h, { fit: 'cover' }).png().toBuffer();
+          out = await sharp(out).composite([{ input: patch, left: pn.x, top: pn.y }]).png().toBuffer();
+          break;
+        } catch (err) {
+          alog(`panel ${idx + 1} re-render failed: ${(err as Error).message}`);
+        }
+      }
+    }
+    return out;
+  };
+
   // ── 2b. shape reference from the real photo library (any shape we have a photo of)
   let shapeRef: { name: string; w: number; h: number } | null = null;
   if (specialShape && shapeWord && !sheetMode) {
@@ -1005,6 +1135,9 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     if (shapeRef) alog(`library shape reference render ${r.ok ? 'ok' : 'rejected → text engine'}`);
     if (!r.ok) r = await renderChecked(withTrigger(prompt), null, 3);
     bytes = r.bytes;
+    // Special-shape sheet still has off-shape panels: re-render just those panels one by one and paste them in
+    // (Qwen-Image draws a single triangular tray fine but keeps slipping a square box into a five-panel grid).
+    if (sheetMode && specialShape && shapeWord && !r.ok) bytes = await repairPanels(bytes);
   }
 
   // ── 4. size badge (sheet), watermark, store, post
