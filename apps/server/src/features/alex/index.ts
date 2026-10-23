@@ -69,6 +69,9 @@ const PHOTO_TYPES: Record<string, string[]> = {
   hair: ['hair extension', 'hair'], wig: ['wig', 'hair'], eyelash: ['eyelash', 'lash'], lash: ['lash', 'eyelash'], serum: ['serum', 'dropper'],
   cigarette: ['cigarette', 'pre-roll', 'preroll'], book: ['book'], folder: ['folder'], envelope: ['envelope'], card: ['card'],
   hanger: ['hang tab', 'hanger'], window: ['window'], handle: ['handle'], heart: ['heart'],
+  // special shapes: a photo for a "triangle chocolate box" must show a triangular box, not any chocolate box
+  triangle: ['triangle', 'triangular'], triangular: ['triangle', 'triangular'], round: ['round', 'circular', 'circle', 'cylindrical'], circular: ['round', 'circular', 'circle'],
+  hexagonal: ['hexagon', 'hexagonal'], octagon: ['octagon', 'octagonal'], octagonal: ['octagon', 'octagonal'], oval: ['oval'], star: ['star'], diamond: ['diamond'], pyramid: ['pyramid', 'triangular'],
 };
 interface ExampleRow {
   dialogue: string;
@@ -643,18 +646,31 @@ async function sheetPanels(png: Buffer): Promise<{ x: number; y: number; w: numb
   }
   return panels;
 }
-const SHAPE_QUESTION = 'name the outline shape of the box body as seen from above (its footprint), ignoring the lid: one of heart, round, hexagon, octagon, triangle, square, rectangle, oval, star, diamond, pillow, tube, pyramid, other. A box whose base has four corners is "square" or "rectangle" even if its lid is pointed.';
+const SHAPE_QUESTION = 'name the outline shape of the box BASE as seen from above (its footprint): one of heart, round, hexagon, octagon, triangle, square, rectangle, oval, star, diamond, pillow, tube, pyramid, other. Judge the base/body that holds the product, never the lid: if the box is open, look only at the tray the product sits in and ignore the raised or removed lid completely. A base with four corners is "square" or "rectangle" even when its lid is a triangle or another shape.';
+/** Levenshtein distance (small strings only). */
+function editDistance(a: string, b: string): number {
+  const dp: number[] = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = dp[0]; dp[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cur = dp[j];
+      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+  }
+  return dp[b.length];
+}
 /** Outline shape of the single box in one photo plus every piece of text printed on it (vision model). */
-async function singlePhotoCheck(deps: AppDeps, img: Buffer, mime = 'image/png'): Promise<{ shape: string; text: string }> {
+async function singlePhotoCheck(deps: AppDeps, img: Buffer, mime = 'image/png'): Promise<{ shape: string; text: string; productInside: boolean }> {
   const out = await chat(deps, [
     { role: 'system', content: 'You describe packaging photos precisely. Reply with ONLY a JSON object, no prose.' },
     { role: 'user', content: [
       { type: 'image_url', image_url: { url: `data:${mime};base64,${img.toString('base64')}` } },
-      { type: 'text', text: `For this photo of a box, ${SHAPE_QUESTION} Also transcribe ALL text, letters, initials or monogram letters printed on the box or inside it (not the website watermark), exactly as written, or "" if none. Return {"shape":"...","text":"..."}.` },
+      { type: 'text', text: `For this photo of a box, ${SHAPE_QUESTION} Also transcribe ALL text, letters, initials or monogram letters printed on the box or inside it (not the website watermark), exactly as written, or "" if none. Also say whether a product (chocolates, a bottle, a candle, an item) is visible inside the open box. Return {"shape":"...","text":"...","product_inside":true/false}.` },
     ] as unknown as string },
   ], false);
-  const j = parseQaJson((out.content ?? '').trim()) as { shape?: string; text?: string };
-  return { shape: String(j.shape ?? '').toLowerCase(), text: String(j.text ?? '').trim() };
+  const j = parseQaJson((out.content ?? '').trim()) as { shape?: string; text?: string; product_inside?: boolean };
+  return { shape: String(j.shape ?? '').toLowerCase(), text: String(j.text ?? '').trim(), productInside: j.product_inside === true };
 }
 /** Per-panel shape report for a sheet: panel rectangles (from the white gutters), the shape seen in each, and the indexes that are not the requested shape. */
 async function panelShapeReport(deps: AppDeps, png: Buffer, shapeWord: string): Promise<{ panels: { x: number; y: number; w: number; h: number }[]; shapes: string[]; bad: number[] } | null> {
@@ -1057,7 +1073,10 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     const mainSentence = prompt.match(/top-left:\s*(.+?)(?:\.\s|$)/i)?.[1] ?? '';
     const boxDesc = (mainSentence.replace(/^(a|an)\s+(closed\s+)?/i, '').replace(/\s(standing|sitting|placed|resting|set|displayed|lying|positioned|shown)\s(on|against)\b.*$/i, '').trim() || desc).slice(0, 400);
     alog(`panel repair box description: ${boxDesc.slice(0, 160)}`);
-    const product = (prompt.match(/showing (.+?) inside/i)?.[1] ?? 'the product').trim().slice(0, 120);
+    const productGuess = Object.keys(PHOTO_TYPES).find((k) => !['window', 'handle', 'heart', 'rigid', 'magnetic', 'tuck', 'sleeve', 'drawer', 'pillow', 'tube', 'hexagon', 'display', 'corrugated', 'shipping', 'mailer', 'gable', 'bag', 'pouch', 'label', 'sticker'].includes(k) && new RegExp(`\\b${k}`, 'i').test(desc + ' ' + customerWords));
+    const product = (prompt.match(/showing (.+?) (?:inside|sitting|nestled|resting)/i)?.[1] ?? (productGuess ? `${productGuess}s` : 'the product')).trim().slice(0, 120);
+    const scene = (mainSentence.match(/\s(?:standing|sitting|placed|resting|set|displayed|lying|positioned|shown)\s(?:on|against)\s(.+)$/i)?.[1] ?? prompt.match(/standing on (.+?)\./i)?.[1] ?? 'a dark wooden table with softly blurred warm decor behind').trim().slice(0, 200);
+    alog(`panel repair product: ${product}; scene: ${scene.slice(0, 80)}`);
     const sides = sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : '';
     const views = ['seen from a three-quarter angle', 'open', 'seen straight from the front', 'seen from a three-quarter angle', 'seen from directly above'];
     const okWords = SHAPE_SYNONYMS[shapeWord!.toLowerCase()] ?? [shapeWord!.toLowerCase()];
@@ -1066,8 +1085,8 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       const pn = report.panels[idx];
       const view = views[idx] ?? views[3];
       const text = view === 'open'
-        ? `A single ${shapeWord}-shaped rigid gift box${sides}, open: its ${shapeWord}-shaped base seen from a high three-quarter angle as a ${shapeWord} tray holding ${product} in a fitted insert, and its separate ${shapeWord}-shaped lid lying flat on the table beside it; the base and the lid both have the ${shapeWord} outline. The box is ${boxDesc}. Photorealistic luxury product photography, soft studio light, sharp.`
-        : `A single closed ${shapeWord}-shaped rigid gift box${sides}, lid seated, ${view}, the whole silhouette a ${shapeWord}. The box is ${boxDesc}. Photorealistic luxury product photography, soft studio light, sharp.`;
+        ? `A single ${shapeWord}-shaped rigid gift box${sides}, open, seen from high above: the ${shapeWord}-shaped base lies flat on the table as a ${shapeWord} tray whose walls follow the ${shapeWord} outline, holding ${product} clearly visible in a fitted insert; the separate ${shapeWord}-shaped lid lies flat on the table next to it, fully detached, with a gap of table visible between lid and base. The box is ${boxDesc}, standing on ${scene}. Photorealistic luxury product photography, soft studio light, sharp.`
+        : `A single closed ${shapeWord}-shaped rigid gift box${sides}, lid seated, ${view}, the whole silhouette a ${shapeWord}. The box is ${boxDesc}, standing on ${scene}. Photorealistic luxury product photography, soft studio light, sharp.`;
       const k = 1024 / Math.max(pn.w, pn.h);
       const rw = Math.max(512, Math.round((pn.w * k) / 16) * 16), rh = Math.max(512, Math.round((pn.h * k) / 16) * 16);
       for (let t = 1; t <= 2; t++) {
@@ -1075,9 +1094,11 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
           const img = await renderOnce(text, null, undefined, { w: rw, h: rh });
           const chk = await singlePhotoCheck(deps, img);
           const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
-          const textOk = expectedText.length ? norm(chk.text) === norm(expectedText.join('')) : norm(chk.text).length <= 2;
-          alog(`panel ${idx + 1} (${view}) re-render ${t}: shape=${chk.shape} text="${chk.text}"${textOk ? '' : ' (text rejected)'}`);
-          if (!okWords.some((w) => chk.shape.includes(w)) || !textOk) continue;
+          // the vision model (or Qwen) may "fix" a customer's spelling: allow up to 2 differing letters
+          const textOk = expectedText.length ? editDistance(norm(chk.text), norm(expectedText.join(''))) <= 2 : norm(chk.text).length <= 2;
+          const productOk = view !== 'open' || chk.productInside;
+          alog(`panel ${idx + 1} (${view}) re-render ${t}: shape=${chk.shape} text="${chk.text}"${textOk ? '' : ' (text rejected)'}${productOk ? '' : ' (no product inside)'}`);
+          if (!okWords.some((w) => chk.shape.includes(w)) || !textOk || !productOk) continue;
           const patch = await sharp(img).resize(pn.w, pn.h, { fit: 'cover' }).png().toBuffer();
           out = await sharp(out).composite([{ input: patch, left: pn.x, top: pn.y }]).png().toBuffer();
           break;
@@ -1137,7 +1158,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     bytes = r.bytes;
     // Special-shape sheet still has off-shape panels: re-render just those panels one by one and paste them in
     // (Qwen-Image draws a single triangular tray fine but keeps slipping a square box into a five-panel grid).
-    if (sheetMode && specialShape && shapeWord && !r.ok) bytes = await repairPanels(bytes);
+    if (sheetMode && specialShape && shapeWord) bytes = await repairPanels(bytes);
   }
 
   // ── 4. size badge (sheet), watermark, store, post
@@ -1242,6 +1263,12 @@ async function runTool(deps: AppDeps, conversationId: string, call: ToolCall, la
   try {
     switch (call.function.name) {
       case 'send_photo': {
+        // The customer named their own brand/logo/design: no library photo can show that, so render the picture.
+        const branded = /\b(brand(ed|ing)?|logo|my design|our design|named|called|titled)\b/i.test(lastVisitorText) || /["“][^"”]{2,40}["”]/.test(lastVisitorText);
+        if (branded) {
+          alog(`branded photo request ("${lastVisitorText.slice(0, 60)}"): rendering a picture instead of a library photo`);
+          return await makeMockup(deps, conversationId, String(args.query ?? lastVisitorText), wmText, convoText, true);
+        }
         const res = await sendPhoto(deps, conversationId, String(args.query ?? ''), wmText);
         // Nothing of that kind in the library: render a mockup right away instead of
         // asking the customer whether they want one (the owner wants no permission questions).
