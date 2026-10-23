@@ -1035,8 +1035,17 @@ async function runTool(deps: AppDeps, conversationId: string, call: ToolCall, la
   alog(`tool ${call.function.name} ${JSON.stringify(args).slice(0, 300)}`);
   try {
     switch (call.function.name) {
-      case 'send_photo':
-        return await sendPhoto(deps, conversationId, String(args.query ?? ''), wmText);
+      case 'send_photo': {
+        const res = await sendPhoto(deps, conversationId, String(args.query ?? ''), wmText);
+        // Nothing of that kind in the library: render a mockup right away instead of
+        // asking the customer whether they want one (the owner wants no permission questions).
+        if (res.startsWith('No photo of that exact product type')) {
+          alog(`no library photo for "${args.query}": rendering a mockup instead`);
+          const m = await makeMockup(deps, conversationId, String(args.query ?? ''), wmText, convoText);
+          return `No library photo of that exact product, so a mockup was rendered and sent instead. ${m}`;
+        }
+        return res;
+      }
       case 'make_mockup':
         return await makeMockup(deps, conversationId, String(args.prompt ?? ''), wmText, convoText);
       case 'handover': {
