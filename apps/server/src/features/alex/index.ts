@@ -292,6 +292,15 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
   rows = [...rows.filter((r) => !isOther(r)).slice(0, 12), ...rows.filter(isOther).slice(0, 8)];
   // Let the big model confirm the candidate really shows what the customer asked for
   // (keyword search alone once returned a Red Bull rigid box for "perfume box").
+  // Photos already sent in this conversation (files point at the watermarked copy photos-wm/<photo id>.gz).
+  const sent = await deps.db.all<{ compressed_path: string }>(
+    "SELECT compressed_path FROM files WHERE conversation_id = ? AND uploader_type = 'BOT'",
+    [conversationId],
+  );
+  const sentIds = new Set(sent.map((f) => path.basename(f.compressed_path ?? '').replace(/\.gz$/, '')));
+  const before = rows.length;
+  rows = rows.filter((r) => !sentIds.has(r.id));
+  if (rows.length < before) alog(`photo candidates: ${before - rows.length} already sent, ${rows.length} left`);
   const pickFrom = async (cands: PhotoRow[]): Promise<PhotoRow | null> => {
     if (cands.length === 0) return null;
     const list = cands.map((r, i) => `${i + 1}) ${r.caption.slice(0, 220)}`).join('\n');
@@ -314,13 +323,7 @@ async function sendPhoto(deps: AppDeps, conversationId: string, query: string, w
       alog(`photo pick failed: ${(err as Error).message}`);
     }
   }
-  // Skip photos already sent in this conversation (same compressed_path).
-  const sent = await deps.db.all<{ compressed_path: string }>(
-    "SELECT compressed_path FROM files WHERE conversation_id = ? AND uploader_type = 'BOT'",
-    [conversationId],
-  );
-  const sentPaths = new Set(sent.map((s) => s.compressed_path));
-  const pick = rows.find((r) => !sentPaths.has(r.path) && fs.existsSync(r.path));
+  const pick = rows.find((r) => !sentIds.has(r.id) && fs.existsSync(r.path));
   if (!pick) return 'No photo of that exact product type in the library. Say we do not have a photo of that one handy and offer a quick mockup (make_mockup) instead. Do not pretend to send one.';
 
   // Watermarked copy (cached per photo) so every picture carries the website name.
@@ -922,11 +925,12 @@ async function maybeAutoHandover(deps: AppDeps, conversationId: string, convo: C
     "SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ? AND agent_only = 1 AND body LIKE '🔔%'",
     [conversationId],
   );
-  if (prior && Number(prior.n) > 0) return;
+  if (prior && Number(prior.n) > 0) { alog('auto handover: already handed over'); return; }
   const visitorText = convo.filter((m) => m.role === 'user').map((m) => (typeof (m as { content: unknown }).content === 'string' ? (m as { content: string }).content : '')).join('\n');
   const askedForQuote = /\b(quote|quotation|price|pricing|cost|estimate|how much)\b/i.test(visitorText);
   const saidHandover = /\b(hand(?:ing)? (?:this|it|you) over|our team will|team member will|pass (?:this|it) (?:on|along)|estimation team)\b/i.test(reply);
   if (!CONTACT_RE.test(visitorText) && !(askedForQuote && saidHandover)) return;
+  alog(`auto handover: contact=${CONTACT_RE.test(visitorText)} quote=${askedForQuote} said=${saidHandover}`);
   try {
     const botName = botSenderFor(conversationId).name;
     const transcript = convo.map((m) => `${m.role === 'user' ? 'Customer' : botName}: ${(m as { content: string | null }).content ?? ''}`).join('\n');
@@ -1029,6 +1033,7 @@ function buildSystem(deps: AppDeps, name: string, website: WebsiteRow, visitor: 
     `Never repeat the opening question ("are you looking for custom printed boxes?") once the customer has said what they need: answer their need. Keep the product type they named: a bag stays a bag, a pouch a pouch, a label a label; never call it a box. "Shopping bag" or "bag" means a paper bag: if the website content lists paper bags, offer them; if not, say our focus is boxes and the team can confirm paper bags, never assume plastic. MINIMUM ORDER: if the website content says no minimum / zero minimum / low MOQ, there is NO minimum: one piece is possible at a higher unit price, larger runs are cheaper per unit; never state a minimum of 100 or any number. If the customer corrects you or complains ("you said box, I asked for a bag"), apologise in a few words and continue correctly; do not send a photo as an answer to a complaint. ` +
     `If your greeting already asked whether they need boxes and they only say hi/hello, do not repeat that question: greet back in a few words and ask what they are packing. Make or update a mockup ONLY when the customer asks to see something or asks for a visible change (text, colour, logo, shape, window); a change of material, stock, quantity, size or deadline is confirmed in words, not re-rendered. If they ask you to "share a design from your side", point to the mockup you already sent or make one with make_mockup. ` +
     `There is no catalog or price list (everything is made to order): if asked for a catalog, say so in a few words and offer photos of similar boxes (send_photo) or a mockup. If the customer does not know the size, ask what they will pack and its dimensions, or suggest a typical size for that product. ` +
+    `Lead time wording, always the same: production 12–14 business days after artwork approval (rush 8–12 business days with rush charges) plus shipping; never quote other production numbers. Physical samples: the website offers free samples; say the team arranges a sample once the specs and contact details are in, and ask for them; a request for a physical sample is NOT a request for a photo. ` +
     `Qualification order: first WHAT they pack (the product), then box type, size, quantity, material/printing, deadline, then name + email/phone. If they answer "yes" to the opener, ask what product they are packing, never size/quantity first. Never re-ask a detail already given in this chat (sizes, quantities, printing, deadline, brand name): confirm it and move to the next missing one. You can ALWAYS create an AI mockup with make_mockup, also when the customer has no artwork or says "share a design from your side": never say you cannot share or make one. CMYK, Pantone, finish and stock are production details, not visible changes: explain them (CMYK = full-colour printing, the mockup already shows full colour) instead of claiming you updated the mockup. When asked about details of a gallery photo you sent (stock, size, price), say it is a sample from our gallery and give the typical options; do not invent specifics. Collect name + email (or phone) BEFORE handing over: if the customer says "send the quote" without contact details, ask for them first. ` +
     `FIRST understand what the customer actually said and answer THAT. If they say they do not want boxes, are only asking a question, are unsure, joke, or change topic, respond to it naturally (ask what they are looking for, answer the question, offer options). Never push "size and quantity" unless they have told you what they want to pack or order. Never ask a question you already asked in this chat; if they answered "yes" to your opener, move on to what they want to pack and the details. Every reply ends with the next useful step: a question about the missing detail (type, size, quantity, printing, deadline, contact) or what happens next; never just repeat their order back. When the customer is closing (thanks, that's all, bye), close warmly in one line, invite them to come back or share an email for a quote, and never pressure them for details. If they ask about something we do not make (poly/plastic bags, glass jars...), say so and suggest what we do make.`,
     `Goal of every chat: understand what they need (box type, dimensions L×W×H, quantity, material, printing/finish, deadline), share photos or a mockup when it helps them decide, collect their name + email/phone for the estimate, then CALL the handover tool (do not just say you will) so the team sends the exact quote. Never invent prices, lead times or policies that are not in the FAQ/website content; say the team will confirm.`,
@@ -1144,7 +1149,7 @@ async function voiceSample(deps: AppDeps, botName: string, website: WebsiteRow, 
 let alexDownUntil = 0;
 const isPodError = (err: unknown): boolean => /fetch failed|ECONN|ETIMEDOUT|timeout|aborted|LLM (404|502|503|504)/i.test((err as Error)?.message ?? '');
 
-export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () => void): void {
+export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () => void, opts?: { followUp?: boolean }): void {
   if (Date.now() < alexDownUntil && fallback) {
     fallback();
     return;
@@ -1197,8 +1202,11 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       {
         const lastRow = history[history.length - 1];
         const botBefore = history.some((m) => m.sender_type === 'BOT' && m !== lastRow);
-        if (lastRow?.sender_type === 'VISITOR' && lastRow.kind === 'TEXT' && botBefore && /^(hi+|hello+|hey+|hii+|hy|salam|assalam[\w ]*|good (morning|afternoon|evening))[.!\s]*$/i.test((lastRow.body ?? '').trim())) {
-          const lines = ['Hi! What are you looking to pack? I can help with sizes, materials and a quick quote.', 'Hello! Tell me what product you are packing and I will guide you.'];
+        if (lastRow?.sender_type === 'VISITOR' && lastRow.kind === 'TEXT' && botBefore && /^(hi+|hello+|helo+|hallo+|hellow+|hey+|hii+|hy|yo|salam|assalam[\w ]*|aoa|good (morning|afternoon|evening))[.!\s]*$/i.test((lastRow.body ?? '').trim())) {
+          const salam = /salam|aoa/i.test(lastRow.body ?? '');
+          const lines = salam
+            ? ['Walaikum assalam! Aap kya pack karna chahte hain? Size, material aur quote mein madad kar sakta hoon.', 'Walaikum assalam! Batayein kis product ke liye boxes chahiyein?']
+            : ['Hi! What are you looking to pack? I can help with sizes, materials and a quick quote.', 'Hello! Tell me what product you are packing and I will guide you.'];
           const line = lines[Math.abs(Number(BigInt.asUintN(32, BigInt('0x' + conversationId.replace(/-/g, '').slice(0, 8))))) % lines.length];
           await postMessage(deps, { conversationId, senderType: 'BOT', body: line });
           alog('bare hi after greeting: fixed reply');
@@ -1245,7 +1253,14 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
 
       typing(true);
       let reply: string | null = null;
-      const messages: ChatMsg[] = [{ role: 'system', content: buildSystem(deps, botSenderFor(conversationId).name, website, visitor ?? null, knowledge, examples, voice) }, ...visionConvo];
+      const lastTwoUser = convo.filter((m) => m.role === 'user').slice(-2).map((m) => (typeof (m as { content: unknown }).content === 'string' ? (m as { content: string }).content : '')).join(' ');
+      const romanUrdu = (lastTwoUser.match(/\b(mujhe|mujhay|chahiye|chahiy|chaiye|chahta|chahti|kya|kia|hogi|hoga|hai|hain|bhej|bhejo|bhejdo|dikhao|dikha|karo|kero|kardo|theek|thik|nahi|nai|kitna|kitne|kitni|mera|meri|aap|apko|aapko|hum|hamein|sakta|sakte|sakti|wala|wali|liye|batao|bta|btao|zaroorat|shukriya|acha|accha|janab|bhai|kitnay|dena|dedo|chahiyein)\b/gi) ?? []).length >= 2;
+      const systemText = buildSystem(deps, botSenderFor(conversationId).name, website, visitor ?? null, knowledge, examples, voice)
+        + (romanUrdu ? '\nLANGUAGE: the customer writes Roman Urdu (Urdu in Latin letters). Reply in natural, short Roman Urdu (e.g. "Ji, 100 boxes 8x8x3 inch ke liye quote team bhejegi. Aap ka email?"), keeping product terms in English. Never switch to English while they write Roman Urdu. Quote ke liye hamesha kaho "team aap ko email par exact quote bhejegi"; kabhi na kaho ke quote bhej diya gaya hai.' : '');
+      if (romanUrdu) alog('customer writes Roman Urdu');
+      const messages: ChatMsg[] = [{ role: 'system', content: systemText }, ...visionConvo];
+      if (romanUrdu) messages.push({ role: 'user', content: '[Reply in Roman Urdu (Latin letters), one or two short sentences, product terms in English.]' });
+      if (opts?.followUp) messages.push({ role: 'user', content: '[The customer sent this while you were still replying; your previous reply is already delivered. Answer only what is NEW in one short sentence and do not repeat a question you just asked.]' });
       try {
         for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
           const t0 = Date.now();
@@ -1257,7 +1272,7 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
             const prevBot = typeof prevBotText === 'string' ? prevBotText : '';
             const hadMockup = convo.some((m) => m.role === 'assistant' && typeof (m as { content: unknown }).content === 'string' && /photo was sent to the customer here: mockup/.test((m as { content: string }).content));
             const revisionAsk = hadMockup && /\b(instead( of)?|change|replace|update|modify|edit|make (it|the|them)|put|print|add|remove|swap|redo|regenerate|try again|another (one|try|version)|new mockup|different (colou?r|text|font|logo|size|shape|finish)|in (gold|silver|black|white|red|blue|green|pink|matte|glossy))\b/i.test(lu);
-            const yesToMockup = /^(yes|yeah|yep|yup|sure|ok(ay)?|please|go ahead|do it|generate|make it)\b/i.test(lu.trim()) && /\b(want|would you like|shall i|should i|can i|like me to|like to see|interested in)\b[^?]*\b(mock-?up|visual|render|concept)\b[^?]*\?/i.test(prevBot);
+            const yesToMockup = lu.trim().split(/\s+/).length <= 4 && /^(yes|yeah|yep|yup|sure|ok(ay)?|please|go ahead|do it|generate|make it)\b/i.test(lu.trim()) && /\b(want|would you like|shall i|should i|can i|like me to|like to see|interested in)\b[^?]*\b(mock-?up|visual|render|concept)\b[^?]*\?/i.test(prevBot);
             const promised = /\b(i('ll| will| can)|let me|i am going to|i'm going to)\b[^.!?]*\b(generate|create|update|make|prepare|render|work on)\b[^.!?]*\b(mock-?up|visual|render|concept|design)\b/i.test(out.content ?? '');
             const claimsMockup = /\b(here is|here's|here are|attached|sending)\b[^.!?]*\b(mock-?up|render|concept|visual)\b/i.test(out.content ?? '');
             const complaintEarly = /\b(you (are|were|said|sent|keep|gave|just)|asked for|i asked|i said|not what|wrong|didn'?t|don'?t|why|instead of)\b/i.test(lu);
@@ -1265,9 +1280,11 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
             const hadPhoto = convo.some((m) => m.role === 'assistant' && typeof (m as { content: unknown }).content === 'string' && /photo was sent to the customer here:/.test((m as { content: string }).content));
             const PRODUCT_RE = /\b(box|boxes|mailer|mailers|pouch|pouches|sleeve|sleeves|label|labels|bag|bags|carton|cartons|tube|tubes|tray|trays|insert|inserts|packaging|display)\b/i;
             const shortLu = lu.trim().split(/\s+/).length <= 10;
-            const claimsPhoto = /\b(here is|here's|here are|attached|sending|i've sent|i have sent|sent you)\b[^.!?]*\b(photo|picture|image|pic)s?\b/i.test(out.content ?? '');
+            const claimsPhoto = /\b(here is|here's|here are|attached|sending|i've sent|i have sent|sent you)\b[^.!?]*\b(photo|picture|image|pic|sample|example|option)s?\b/i.test(out.content ?? '');
             const complaint = /\b(you (are|were|said|sent|keep|gave|just)|asked for|i asked|i said|not what|wrong|didn'?t|don'?t|why|instead of)\b/i.test(lu);
-            const wantsPhoto = !complaint && ((/\b(photo|picture|pic|image|example|sample)s?\b/i.test(lu) && (/\b(show|see|have|send|share|look|of)\b/i.test(lu) || hadPhoto))
+            const physicalSample = /\b(physical|real|actual|hard|printed|free) samples?\b|\bsamples? (to|at) my\b|\b(ship|mail|post|courier|deliver) (me )?(a |some |the )?samples?\b|\bsend (me )?(a |some |the )?samples? (to|at|by|home)\b/i.test(lu);
+            const morePhotos = hadPhoto && shortLu && /\b(more|another|other|next|different|else|again)\b/i.test(lu);
+            const wantsPhoto = !complaint && !physicalSample && (morePhotos || (/\b(photo|picture|pic|image|example|sample)s?\b/i.test(lu) && (/\b(show|see|have|send|share|look|of)\b/i.test(lu) || hadPhoto))
               || /\bshow me\b/i.test(lu)
               || (hadPhoto && shortLu && PRODUCT_RE.test(lu) && !wantsMockup)
               || claimsPhoto);
@@ -1345,7 +1362,7 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       // Alex cannot send emails: rewrite any such claim to what really happens.
       {
         const parts = sentencesOf(reply);
-        const fixed = parts.map((p) => (/\b(i('| wi)ll|i will|let me|i just|i have|i've|i am going to|i'm going to)\b[^.!?]*\b(send|sent|share|shoot|drop)[^.!?]*\b(e-?mail|inbox|test e-?mail)\b/i.test(p) || /\btest e-?mail\b/i.test(p))
+        const fixed = parts.map((p) => (/\b(i('| wi)ll|i will|let me|i just|i have|i've|i am going to|i'm going to)\b[^.!?]*\b(send|sent|share|shoot|drop)[^.!?]*\b(e-?mail|inbox|test e-?mail)\b/i.test(p) || /\btest e-?mail\b/i.test(p) || /\b(i('ll| will| am|'m)?|let me) (e-?mail|mail)(ing)? (you|the|your|it|them|a)\b/i.test(p))
           ? 'Our team will email you the exact quote. '
           : p);
         const joined = fixed.join('').replace(/(Our team will email you the exact quote\. ?){2,}/g, 'Our team will email you the exact quote. ').trim();
@@ -1437,7 +1454,7 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       }
     } finally {
       inFlight.delete(conversationId);
-      if (pendingTurn.delete(conversationId)) alexTurn(deps, conversationId, fallback);
+      if (pendingTurn.delete(conversationId)) alexTurn(deps, conversationId, fallback, { followUp: true });
     }
   })();
 }
