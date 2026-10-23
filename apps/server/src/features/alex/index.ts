@@ -1304,6 +1304,8 @@ async function handover(deps: AppDeps, conversationId: string, reason: string, s
 }
 
 const CONTACT_RE = /[\w.+-]+@[\w-]+\.[\w.-]+|\+?\d[\d\s().-]{8,}\d/;
+// A quantity in the customer's words ("500 boxes", "1,000 pcs", "2k", "quantity 300"), not a size like 10x8x4.
+const QTY_RE = /\b(\d{1,3}(,\d{3})+|\d{2,7})\s*(k\b|pcs|pieces|units|boxes|bags|pouches|labels|qty|quantity|per (month|order))|\b(quantity|qty|order of|need|want)\s*(is|:)?\s*(\d{1,3}(,\d{3})+|\d{2,7})\b(?!\s*[x×*])|\b\d+\s*(k|thousand|hundred)\b/i;
 const HANDOVER_RE = /\b(quote|quotation|estimate|hand(?:ing)? (?:this|it|you) over|our team will|team member will|pass (?:this|it) (?:on|along))\b/i;
 
 async function maybeAutoHandover(deps: AppDeps, conversationId: string, convo: ChatMsg[], reply: string): Promise<void> {
@@ -1365,7 +1367,7 @@ async function runTool(deps: AppDeps, conversationId: string, call: ToolCall, la
       }
       case 'make_mockup': {
         // The customer asked for a photo/picture (not a mockup): render it, but never call it a mockup.
-        const askedPhoto = /\b(photo|picture|pic|image|tasveer|tasvir)s?\b/i.test(lastVisitorText) && !/\b(mock-?up|render|3d|concept)\b/i.test(lastVisitorText);
+        const askedPhoto = (/\b(photo|picture|pic|image|tasveer|tasvir)s?\b/i.test(lastVisitorText) || /\b(can|could|may) i see\b|\blet me see\b|\bshow me\b|\bdikha(o|yen|do)?\b|\bdekhna\b/i.test(lastVisitorText)) && !/\b(mock-?up|render|3d|concept)\b/i.test(lastVisitorText);
         return await makeMockup(deps, conversationId, String(args.prompt ?? ''), wmText, convoText, askedPhoto);
       }
       case 'handover': {
@@ -1440,7 +1442,7 @@ function buildSystem(deps: AppDeps, name: string, website: WebsiteRow, visitor: 
     `Vary your wording: never reuse a sentence or question you already used in this chat; move to the next missing detail instead. When you describe a photo you sent, use only the facts in its caption (no invented foil, velvet, window or sizes). ` +
     `PRICES: never state any price, price range or ballpark in chat, not even "roughly"; say the exact quote comes from the team by email once you have the details and their contact. Do not confirm, deny or match a competitor's price; say we are direct manufacturers and the team will quote competitively. ` +
     `Lead time wording, always the same: production 12–14 business days after artwork approval (rush 8–12 business days with rush charges) plus shipping; never quote other production numbers. Physical samples: the website offers free samples; say the team arranges a sample once the specs and contact details are in, and ask for them; a request for a physical sample is NOT a request for a photo. ` +
-    `Qualification order: first WHAT they pack (the product), then box type, size, quantity, material/printing, deadline, then name + email/phone. If they answer "yes" to the opener, ask what product they are packing, never size/quantity first. Never re-ask a detail already given in this chat (sizes, quantities, printing, deadline, brand name): confirm it and move to the next missing one. You can ALWAYS create an AI mockup with make_mockup, also when the customer has no artwork or says "share a design from your side": never say you cannot share or make one. CMYK, Pantone, finish and stock are production details, not visible changes: explain them (CMYK = full-colour printing, the mockup already shows full colour) instead of claiming you updated the mockup. When asked about details of a gallery photo you sent (stock, size, price), say it is a sample from our gallery and give the typical options; do not invent specifics. Collect name + email (or phone) BEFORE handing over: if the customer says "send the quote" without contact details, ask for them first. ` +
+    `Qualification order: first WHAT they pack (the product), then box type, size, quantity, material/printing, deadline, then name + email/phone. Ask for name and email only once the quantity is known, and ask name + email together in one short question (never also phone, size or anything else in that message). If they answer "yes" to the opener, ask what product they are packing, never size/quantity first. Never re-ask a detail already given in this chat (sizes, quantities, printing, deadline, brand name): confirm it and move to the next missing one. You can ALWAYS create an AI mockup with make_mockup, also when the customer has no artwork or says "share a design from your side": never say you cannot share or make one. CMYK, Pantone, finish and stock are production details, not visible changes: explain them (CMYK = full-colour printing, the mockup already shows full colour) instead of claiming you updated the mockup. When asked about details of a gallery photo you sent (stock, size, price), say it is a sample from our gallery and give the typical options; do not invent specifics. Collect name + email (or phone) BEFORE handing over: if the customer says "send the quote" without contact details, ask for them first. ` +
     `FIRST understand what the customer actually said and answer THAT. If they say they do not want boxes, are only asking a question, are unsure, joke, or change topic, respond to it naturally (ask what they are looking for, answer the question, offer options). Never push "size and quantity" unless they have told you what they want to pack or order. Never ask a question you already asked in this chat; if they answered "yes" to your opener, move on to what they want to pack and the details. Every reply ends with the next useful step: a question about the missing detail (type, size, quantity, printing, deadline, contact) or what happens next; never just repeat their order back. When the customer is closing (thanks, that's all, bye), close warmly in one line, invite them to come back or share an email for a quote, and never pressure them for details. If they ask about something we do not make (poly/plastic bags, glass jars...), say so and suggest what we do make.`,
     `Goal of every chat: understand what they need (box type, dimensions L×W×H, quantity, material, printing/finish, deadline), share photos or a mockup when it helps them decide, collect their name + email/phone for the estimate, then CALL the handover tool (do not just say you will) so the team sends the exact quote. Never invent prices, lead times or policies that are not in the FAQ/website content; say the team will confirm.`,
     `When the customer asks to SEE something (sample, picture, example, mockup, render, visual, "show me"), call send_photo or make_mockup in that same turn before asking anything else; a mockup request with a description is enough to call make_mockup right away. Never ask permission ("would you like me to generate it?") and never say "I can/will update the mockup": just call make_mockup in that same turn, also for every change the customer asks on a mockup already sent (different text, colour, size, logo). After a photo or mockup was sent, reply in at most TWO short sentences: one line about it, then one question. ` +
@@ -1664,13 +1666,13 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       typing(true);
       let reply: string | null = null;
       const lastTwoUser = convo.filter((m) => m.role === 'user').slice(-2).map((m) => (typeof (m as { content: unknown }).content === 'string' ? (m as { content: string }).content : '')).join(' ');
-      const romanUrdu = (lastTwoUser.match(/\b(mujhe|mujhay|chahiye|chahiy|chaiye|chahta|chahti|kya|kia|hogi|hoga|hai|hain|bhej|bhejo|bhejdo|dikhao|dikha|karo|kero|kardo|theek|thik|nahi|nai|kitna|kitne|kitni|mera|meri|aap|apko|aapko|hum|hamein|sakta|sakte|sakti|wala|wali|liye|batao|bta|btao|zaroorat|shukriya|acha|accha|janab|bhai|kitnay|dena|dedo|chahiyein)\b/gi) ?? []).length >= 2;
+      const romanUrdu = (lastTwoUser.match(/\b(mujhe|mujhay|chahiye|chahiy|chaiye|chahta|chahti|kya|kia|hogi|hoga|hai|hain|bhej|bhejo|bhejdo|dikhao|dikha|karo|kero|kardo|theek|thik|nahi|nai|kitna|kitne|kitni|mera|meri|aap|apko|aapko|hum|hamein|sakta|sakte|sakti|wala|wali|liye|batao|bta|btao|zaroorat|shukriya|acha|accha|janab|bhai|kitnay|dena|dedo|chahiyein|koi|ki|ka|ke|ko|se|ye|yeh|kuch|bhi|abhi|han|haan|ji|nahin|mil|milega|milegi|kis|kon|konsa|kaunsa|krdo|krna|karna|kerna|bana|banao|banado|bnao|dekhna|dekhao|dikhado|chahye|hoon|hun|mujhy|humein|kyun|kyu|kab|kahan|kaise|kese|woh|batain|bataen|batayen|dikhayen|bhejen|bhejein)\b/gi) ?? []).length >= 2;
       const lastUserOnly = convo.filter((m) => m.role === 'user').slice(-1).map((m) => (typeof (m as { content: unknown }).content === 'string' ? (m as { content: string }).content : '')).join(' ');
       const priceIntent = PRICE_INTENT_RE.test(lastTwoUser);
       // Prices are never revealed in chat (owner's decision); ALEX_PRICE_TALK=on would attach past quotes for ballparks.
       const quotesBlock = priceIntent && process.env.ALEX_PRICE_TALK === 'on' ? pastQuotesFor(loadPersona(deps).prices, convo.filter((m) => m.role === 'user').map((m) => (typeof (m as { content: unknown }).content === 'string' ? (m as { content: string }).content : '')).join(' ')) : '';
       // Think (Qwen reasoning) on hard turns: money, complaints, deadlines, long messages.
-      const hardTurn = priceIntent || /\b(complain|refund|wrong|not happy|cancel|deadline|urgent|rush|beat|match|compare|why)\b/i.test(lastUserOnly) || lastUserOnly.split(/\s+/).length > 30;
+      const hardTurn = !CONTACT_RE.test(lastUserOnly) && (priceIntent || /\b(complain|refund|wrong|not happy|cancel|deadline|urgent|rush|beat|match|compare|why)\b/i.test(lastUserOnly) || lastUserOnly.split(/\s+/).length > 30);
       if (hardTurn) alog(`hard turn: thinking on${quotesBlock ? ', past quotes attached' : ''}`);
       const systemText = buildSystem(deps, botSenderFor(conversationId).name, website, visitor ?? null, knowledge, examples, voice, quotesBlock)
         + (romanUrdu ? '\nLANGUAGE: the customer writes Roman Urdu (Urdu in Latin letters). Reply in natural, short Roman Urdu (e.g. "Ji, 100 boxes 8x8x3 inch ke liye quote team bhejegi. Aap ka email?"), keeping product terms in English. Never switch to English while they write Roman Urdu. Quote ke liye hamesha kaho "team aap ko email par exact quote bhejegi"; kabhi na kaho ke quote bhej diya gaya hai.' : '');
@@ -1678,11 +1680,17 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       const messages: ChatMsg[] = [{ role: 'system', content: systemText }, ...visionConvo];
       if (romanUrdu) messages.push({ role: 'user', content: '[Reply in Roman Urdu (Latin letters), one or two short sentences, product terms in English.]' });
       if (opts?.followUp) messages.push({ role: 'user', content: '[The customer sent this while you were still replying; your previous reply is already delivered. Answer only what is NEW in one short sentence and do not repeat a question you just asked.]' });
+      // The customer just shared an email/phone: this turn is a thank-you + "the team will email the quote", never a photo.
+      const contactTurn = CONTACT_RE.test(lastUserOnly);
+      if (contactTurn) {
+        alog('contact shared: tools off, confirming the quote by email');
+        messages.push({ role: 'user', content: '[The customer just shared their contact details. Reply in one short line: thank them by name if they gave one and confirm that our team will email the exact quote to that address shortly. Ask at most ONE question, only if the product, size or quantity is still unknown. Do not send photos or mockups.]' });
+      }
       try {
         for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
           const t0 = Date.now();
-          let out = await chat(deps, messages, round < MAX_TOOL_ROUNDS && !ackAfterMockup, undefined, undefined, hardTurn && round === 0);
-          if (round === 0 && !ackAfterMockup && (!out.tool_calls || out.tool_calls.length === 0)) {
+          let out = await chat(deps, messages, round < MAX_TOOL_ROUNDS && !ackAfterMockup && !contactTurn, undefined, undefined, hardTurn && round === 0);
+          if (round === 0 && !ackAfterMockup && !contactTurn && (!out.tool_calls || out.tool_calls.length === 0)) {
             const lastUserMsg = (([...convo].reverse().find((m) => m.role === 'user') as { content?: unknown })?.content ?? '') as unknown;
             const lu = typeof lastUserMsg === 'string' ? lastUserMsg : '';
             const prevBotText = ((([...convo].reverse().find((m) => m.role === 'assistant') as { content?: unknown })?.content ?? '') as unknown);
@@ -1744,7 +1752,27 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       } finally {
         typing(false);
       }
+      if (!reply?.trim() && !messages.some((m) => m.role === 'tool')) {
+        alog('empty reply: retrying once without thinking');
+        try { const again = await chat(deps, messages, false, undefined, undefined, false); if (again.content?.trim()) reply = again.content.trim(); } catch { /* keep */ }
+      }
       alog(`draft: ${(reply ?? '').slice(0, 100)}`);
+      const allCustomerText = history.filter((m) => m.sender_type === 'VISITOR' && m.kind === 'TEXT').map((m) => m.body ?? '').join(' ');
+      const qtyKnown = QTY_RE.test(allCustomerText);
+      if (reply && contactTurn) {
+        // Keep the thank-you + "team will email the quote"; a question only while the quantity is unknown.
+        const parts = sentencesOf(reply);
+        const keep = parts.filter((p) => !/\?\s*$/.test(p));
+        const q = parts.find((p) => /\?\s*$/.test(p));
+        const shaped = [...keep, ...(!qtyKnown && q ? [q] : [])].join('').trim();
+        if (shaped && shaped !== reply.trim()) { reply = shaped; alog('contact turn: kept confirmation, dropped extra question'); }
+      } else if (reply && /\b(name|e-?mail|phone|contact (number|details))\b/i.test(reply) && /\?/.test(reply) && !qtyKnown && !CONTACT_RE.test(allCustomerText)) {
+        alog('asked for contact before quantity: re-asking');
+        try {
+          const fix = await chat(deps, [...messages, { role: 'assistant', content: reply }, { role: 'user', content: '[Too early for name or email: the quantity is still unknown. Rewrite the reply as one short line that asks ONLY how many boxes they need (keep any confirmation of their details, drop the contact request).]' }], false);
+          if (fix.content?.trim()) reply = fix.content.trim();
+        } catch { /* keep draft */ }
+      }
       // The customer asked for a photo and got a rendered picture: never call it a mockup.
       if (reply && photoFallback.delete(conversationId)) {
         reply = reply.replace(/\b(a |the |your |this |that )?(mock-?ups?|renders?|renderings?|design concepts?)\b/gi, (_m, art) => `${art ?? ''}picture`).replace(/\b(generated|rendered|created) (picture|image)\b/gi, 'picture');
@@ -1767,11 +1795,11 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
           /\b(have a (great|good|wonderful|nice) (day|one|evening|night)|goodbye|take care)\b/i.test(reply) ||
           lastText.trim().length <= 3;
         const usedTool = messages.some((m) => m.role === 'tool');
-        if (!hasQuestion(reply) && !closing && !usedTool) {
+        if (!hasQuestion(reply) && !closing && !usedTool && !(contactTurn && qtyKnown)) {
           try {
             const asked = convo.filter((m) => m.role === 'assistant').map((m) => (m as { content: string | null }).content ?? '').join('\n');
             const follow = await chat(deps, [
-              { role: 'system', content: `You are ${botSenderFor(conversationId).name}, a packaging sales agent. Write ONE short next-step question (max 15 words) that moves this chat forward: ask for a missing detail (box type, size L x W x H, quantity, material, printing/finish, deadline, name/email) or offer to show a photo/mockup. Never repeat a question already asked. Output only the question.` },
+              { role: 'system', content: `You are ${botSenderFor(conversationId).name}, a packaging sales agent. Write ONE short next-step question (max 15 words) that moves this chat forward, never an offer or a permission question such as "would you like a mockup": ask for a missing detail (box type, size L x W x H, quantity, material, printing/finish, deadline, name/email) or offer to show a photo/mockup. Never repeat a question already asked. Output only the question.` },
               { role: 'user', content: `Chat so far:\n${convo.map((m) => `${m.role === 'user' ? 'Customer' : 'Agent'}: ${typeof (m as { content: unknown }).content === 'string' ? (m as { content: string }).content : '[image]'}`).join('\n')}\nAgent (new reply): ${reply}\n\nQuestions already asked:\n${asked}` },
             ], false);
             const q = (follow.content ?? '').trim().split('\n').map((l) => l.trim()).filter(Boolean)[0] ?? '';
@@ -1831,7 +1859,7 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
         const stmt = parts.find((p) => !/\?\s*$/.test(p));
         const q = parts.find((p) => /\?\s*$/.test(p));
         const short = [stmt, q].filter(Boolean).join('').trim();
-        if (short && short !== reply.trim()) { reply = short; alog('shortened caption'); }
+        if (short && short !== reply.trim() && !contactTurn) { reply = short; alog('shortened caption'); }
       }
       // Real agents write short messages: compress anything over ~28 words.
       if (reply.split(/\s+/).length > 22) {
