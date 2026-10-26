@@ -52,7 +52,7 @@ interface PhotoRow {
   caption: string; tags?: string | null;
 }
 
-const PHOTO_SHAPE_KEYS = new Set(['triangle', 'triangular', 'round', 'circular', 'hexagon', 'hexagonal', 'octagon', 'octagonal', 'oval', 'star', 'diamond', 'pyramid', 'heart', 'pillow', 'tube']);
+const PHOTO_SHAPE_KEYS = new Set(['triangle', 'triangular', 'round', 'circular', 'hexagon', 'hexagonal', 'octagon', 'octagonal', 'oval', 'star', 'diamond', 'pyramid', 'heart', 'pillow', 'tube', 'moon', 'crescent']);
 // Box styles / product types a customer may ask to see, with the words a caption may use for them.
 const PHOTO_TYPES: Record<string, string[]> = {
   gable: ['gable'], mailer: ['mailer', 'mailing'], magnetic: ['magnetic', 'magnet'], rigid: ['rigid', 'setup box'],
@@ -73,6 +73,7 @@ const PHOTO_TYPES: Record<string, string[]> = {
   // special shapes: a photo for a "triangle chocolate box" must show a triangular box, not any chocolate box
   triangle: ['triangle', 'triangular'], triangular: ['triangle', 'triangular'], round: ['round', 'circular', 'circle', 'cylindrical'], circular: ['round', 'circular', 'circle'],
   hexagonal: ['hexagon', 'hexagonal'], octagon: ['octagon', 'octagonal'], octagonal: ['octagon', 'octagonal'], oval: ['oval'], star: ['star'], diamond: ['diamond'], pyramid: ['pyramid', 'triangular'],
+  moon: ['moon', 'crescent'], crescent: ['crescent', 'moon'],
 };
 interface ExampleRow {
   dialogue: string;
@@ -623,6 +624,7 @@ const SHAPE_SYNONYMS: Record<string, string[]> = {
   hexagon: ['hexagon', 'hexagonal'], hexagonal: ['hexagon', 'hexagonal'], octagon: ['octagon', 'octagonal'], octagonal: ['octagon', 'octagonal'],
   triangle: ['triangle', 'triangular'], triangular: ['triangle', 'triangular'], pyramid: ['pyramid', 'triangle', 'triangular'],
   pillow: ['pillow'], oval: ['oval', 'ellipse', 'elliptical'], star: ['star'], diamond: ['diamond', 'rhombus'],
+  moon: ['moon', 'crescent'], crescent: ['crescent', 'moon'],
 };
 /** Panel rectangles of a presentation sheet, found from its white gutters (rows/columns that are almost entirely white). */
 async function sheetPanels(png: Buffer): Promise<{ x: number; y: number; w: number; h: number }[]> {
@@ -807,12 +809,12 @@ function sizeLabelFrom(text: string): string | null {
   return d ? `Size: ${d.l} × ${d.w} × ${d.h} ${d.unit}` : null;
 }
 /** Ask the vision model where the closed box is in the main (top-left) panel; Qwen-VL answers in a 0-1000 grid. */
-async function locateMainBox(deps: AppDeps, png: Buffer, W: number, H: number): Promise<[number, number, number, number] | null> {
+async function locateMainBox(deps: AppDeps, png: Buffer, W: number, H: number, single = false): Promise<[number, number, number, number] | null> {
   try {
     const out = await chat(deps, [
       { role: 'user', content: [
         { type: 'image_url', image_url: { url: `data:image/png;base64,${png.toString('base64')}` } },
-        { type: 'text', text: 'Locate the closed gift box (only the box itself, not the table, shadow or decor) in the LARGE top-left photo. Output ONLY JSON {"bbox_2d":[x1,y1,x2,y2]}.' },
+        { type: 'text', text: `Locate the closed gift box (only the box itself, not the table, shadow or decor)${single ? ' in this photo' : ' in the LARGE top-left photo'}. Output ONLY JSON {"bbox_2d":[x1,y1,x2,y2]}.` },
       ] as unknown as string },
     ], false);
     const raw = out.content ?? '';
@@ -820,7 +822,8 @@ async function locateMainBox(deps: AppDeps, png: Buffer, W: number, H: number): 
     if (!m) { alog(`locate box: no bbox in ${raw.slice(0, 80)}`); return null; }
     const [x1, y1, x2, y2] = [Number(m[1]) * W / 1000, Number(m[2]) * H / 1000, Number(m[3]) * W / 1000, Number(m[4]) * H / 1000];
     // Must sit inside the main (top-left) panel and be a real box, not a sliver.
-    if (x2 > W * 0.58 || y2 > H * 0.66 || x2 - x1 < W * 0.08 || y2 - y1 < H * 0.08) { alog(`locate box: implausible bbox ${[x1, y1, x2, y2].map(Math.round).join(',')}`); return null; }
+    const inside = single ? (x2 <= W * 0.95 && y2 <= H * 0.95 && x1 >= W * 0.02) : (x2 <= W * 0.58 && y2 <= H * 0.66);
+    if (!inside || x2 - x1 < W * 0.08 || y2 - y1 < H * 0.08) { alog(`locate box: implausible bbox ${[x1, y1, x2, y2].map(Math.round).join(',')}`); return null; }
     return [x1, y1, x2, y2];
   } catch (err) {
     alog(`locate box failed: ${(err as Error).message}`);
@@ -828,7 +831,7 @@ async function locateMainBox(deps: AppDeps, png: Buffer, W: number, H: number): 
   }
 }
 /** Draw clean dimension lines (length below, height on the right, depth receding from the corner) with labels around the box. */
-async function drawDimensions(buf: Buffer, bb: [number, number, number, number], dims: { l: string; w: string; h: string; unit: string }, W: number, H: number): Promise<Buffer> {
+async function drawDimensions(buf: Buffer, bb: [number, number, number, number], dims: { l: string; w: string; h: string; unit: string }, W: number, H: number, single = false): Promise<Buffer> {
   const [x1, y1, x2, y2] = bb;
   const fs = Math.round(W / 52);
   const gap = Math.round(W / 70);
@@ -844,19 +847,20 @@ async function drawDimensions(buf: Buffer, bb: [number, number, number, number],
   };
   const u = dims.unit;
   const parts: string[] = [];
-  // length: under the box
-  const ly = Math.min(H - fs * 2, y2 + gap);
-  parts.push(line(x1, ly, x2, ly), label((x1 + x2) / 2, ly + fs * 1.3, `${dims.l} ${u}`));
-  // height: right of the box
-  const hx = Math.min(W * 0.62, x2 + gap);
+  // length: under the box, or above it when the box reaches the watermark strip at the bottom
+  const below = y2 + gap + fs * 2.2 < H - fs * 2.4;
+  const ly = below ? y2 + gap : Math.max(fs * 2.4, y1 - gap);
+  parts.push(line(x1, ly, x2, ly), label((x1 + x2) / 2, below ? ly + fs * 1.3 : ly - fs * 1.3, `${dims.l} ${u}`));
+  // height: right of the box (in a sheet the main photo ends at the vertical gutter)
+  const hx = Math.min(single ? W - fs * 4.2 : W * 0.62, x2 + gap);
   parts.push(line(hx, y1, hx, y2), label(hx + fs * 2.6, (y1 + y2) / 2, `${dims.h} ${u}`));
-  // depth: short receding line from the bottom-right corner
-  const panelRight = W * 0.5 - gap * 2; // the main photo ends at the vertical gutter
+  // depth: short receding line from the bottom-left corner
+  const panelRight = single ? W - gap : W * 0.5 - gap * 2;
   const ratio = Math.min(0.6, Math.max(0.2, (Number(dims.w) || 1) / (Number(dims.l) || 1)));
   const dx0 = x1 - gap * 0.4, dy0 = ly + gap * 0.4;
   let d = Math.min((x2 - x1) * ratio * 0.6, W * 0.11);
   const dx1 = dx0 - d * Math.cos(Math.PI / 6), dy1 = dy0 + d * Math.sin(Math.PI / 6);
-  if (dx1 > fs && dy1 < H * 0.64 && hx + fs * 4 < panelRight) {
+  if (below && dx1 > fs && dy1 < (single ? H * 0.9 : H * 0.64) && hx + fs * 4 < panelRight) {
     parts.push(line(dx0, dy0, dx1, dy1), label(Math.max(fs * 2.2, dx1 - fs * 0.4), dy1 + fs * 1.2, `${dims.w} ${u}`));
   } else {
     d = 0;
@@ -938,7 +942,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   } else {
     prompt = await enhanceMockupPrompt(deps, desc, convoText, sheetMode);
   }
-  const SHAPE_RE = /\b(heart|round|circular|circle|hexagon|hexagonal|octagon|octagonal|tube|cylinder|cylindrical|triangle|triangular|pillow|oval|star|diamond|pyramid)(?![ -]?(window|cut-?out|hole|opening|corner|corners|edge|edges|logo|label|sticker|handle))[ -]?(shaped|box|lid|silhouette)?\b/i;
+  const SHAPE_RE = /\b(heart|round|circular|circle|hexagon|hexagonal|octagon|octagonal|tube|cylinder|cylindrical|triangle|triangular|pillow|oval|star|diamond|pyramid|moon|crescent)(?![ -]?(window|cut-?out|hole|opening|corner|corners|edge|edges|logo|label|sticker|handle))[ -]?(shaped|box|lid|silhouette)?\b/i;
   // The box shape comes from the customer's own words (not the enhancer's guesses), ignoring words that describe a window, cutout, corner or logo ("round window" is not a round box).
   const stripWin = (t: string): string => t.replace(/(?:\b[\w-]+ ){0,2}\b(?:window|windows|cut-?outs?|holes?|openings?|corners?|edges?|logo|labels?|stickers?|handles?)\b/gi, ' ');
   const customerAll = stripWin(convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-6).join(' '));
@@ -968,6 +972,20 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const openRequested = OPEN_RE.test(customerWords);
   const wantsOpen = !ref && engine === 'klein' && openRequested;
   if (!openRequested && !ref && !revision && !sheetMode) prompt = `${prompt.replace(/\b(for|holding|containing|with) (a |an |the )?(candle|candles|chocolate|chocolates|perfume|bottle|bottles|cosmetics?|soap|jewell?ery)s?\b/gi, '')} The box is completely closed: the lid is fully seated on the base so only a thin seam line shows where they meet, every flap tucked in, nothing lifted or ajar, nothing visible inside.`;
+  {
+    const d = sizePartsFrom(customerWords) ?? sizePartsFrom(desc);
+    if (d) {
+      const l = Number(d.l), w = Number(d.w), h = Number(d.h);
+      const r = h / Math.max(l, w);
+      const prop = r >= 1.8 ? `The box is clearly taller than it is wide: about ${r.toFixed(1).replace(/\.0$/, '')} times as tall as its width, a tall upright box.`
+        : r >= 1.25 ? 'The box is noticeably taller than it is wide, standing upright.'
+        : r <= 0.45 ? 'The box is a flat, low box, much wider than it is tall.'
+        : r <= 0.75 ? 'The box is wider than it is tall, a low box.'
+        : 'The box is roughly as tall as it is wide, cube-like.';
+      const foot = Math.abs(l - w) / Math.max(l, w) > 0.3 ? ` Its footprint is a rectangle, ${l > w ? 'longer front to back than side to side' : 'wider than it is deep'}.` : '';
+      prompt = `${prompt} ${prop}${foot}`;
+    }
+  }
   alog(`mockup prompt [${engine}]${sheetMode ? ' [sheet]' : ''}${revision ? ' [revision]' : ''}${ref ? ' (reference: ' + ref.name + ')' : ''}${specialShape ? ' [shape: ' + shapeWord + ']' : ''}${wantsOpen ? ' [two-stage open view]' : ''}: ${prompt.slice(0, 1500)}`);
 
   // ── 2. render helpers
@@ -994,7 +1012,8 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   let lastSeed = 0;
   let finalSeed = 0;
   const renderOnce = async (textIn: string, refImg: { name: string; w: number; h: number } | null, seedIn?: number, dims?: { w: number; h: number }): Promise<Buffer> => {
-    let text = textIn;
+    // Quote marks around a brand name get printed on the box by every engine: pass the name bare.
+    let text = textIn.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'");
     const prefix = `alex-${Math.random().toString(16).slice(2, 10)}`;
     const seed = seedIn ?? Math.floor(Math.random() * 999_999_999) + 1;
     lastSeed = seed;
@@ -1245,16 +1264,16 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     }
   }
 
-  // ── 4. size badge (sheet), watermark, store, post
-  if (sheetMode) {
+  // ── 4. size lines (sheet or single text render), watermark, store, post
+  if (sheetMode || (engine === 'qwen' && !ref)) {
     const allCustomer = convoText.split('\n').filter((l) => l.startsWith('Customer:')).join(' ');
     const dims = sizePartsFrom(customerWords) ?? sizePartsFrom(desc) ?? sizePartsFrom(allCustomer);
     if (dims) {
       try {
         const meta = await sharp(bytes, { failOn: 'none' }).metadata();
         const W = meta.width ?? 1344, H = meta.height ?? 1024;
-        const bb = await locateMainBox(deps, bytes, W, H);
-        if (bb) { bytes = await drawDimensions(bytes, bb, dims, W, H); alog(`dimension lines drawn: ${dims.l}x${dims.w}x${dims.h} ${dims.unit} at ${bb.map(Math.round).join(',')}`); }
+        const bb = await locateMainBox(deps, bytes, W, H, !sheetMode);
+        if (bb) { bytes = await drawDimensions(bytes, bb, dims, W, H, !sheetMode); alog(`dimension lines drawn: ${dims.l}x${dims.w}x${dims.h} ${dims.unit} at ${bb.map(Math.round).join(',')}`); }
         else { bytes = await sizeBadge(bytes, `Size: ${dims.l} × ${dims.w} × ${dims.h} ${dims.unit}`); alog('size badge (box not located)'); }
       } catch (err) {
         alog(`dimension overlay failed: ${(err as Error).message}`);
