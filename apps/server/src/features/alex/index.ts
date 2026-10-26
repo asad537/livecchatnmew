@@ -864,7 +864,8 @@ async function drawDimensions(buf: Buffer, bb: [number, number, number, number],
     parts.push(line(dx0, dy0, dx1, dy1), label(Math.max(fs * 2.2, dx1 - fs * 0.4), dy1 + fs * 1.2, `${dims.w} ${u}`));
   } else {
     d = 0;
-    parts.push(label(x1 + fs * 2.2, y1 - fs * 1.1, `depth ${dims.w} ${u}`));
+    if (below) parts.push(label(x1 + fs * 2.2, y1 - fs * 1.1, `depth ${dims.w} ${u}`));
+    else parts.push(label(hx + fs * 2.6, (y1 + y2) / 2 + fs * 1.9, `depth ${dims.w} ${u}`));
   }
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}"><defs><filter id="sh" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="0" stdDeviation="1.2" flood-color="#000" flood-opacity="0.8"/></filter></defs>${parts.join('')}</svg>`;
   return sharp(buf).composite([{ input: Buffer.from(svg), top: 0, left: 0 }]).png().toBuffer();
@@ -950,15 +951,17 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const specialShape = Boolean(shapeWord) && !ref && !revision;
   const SIDES: Record<string, string> = { triangle: 'three', triangular: 'three', pentagon: 'five', hexagon: 'six', hexagonal: 'six', octagon: 'eight', octagonal: 'eight', diamond: 'four' };
   const sidesWord = shapeWord ? SIDES[shapeWord] : undefined;
+  const SHAPE_HINT: Record<string, string> = { moon: 'a crescent moon, a thick C-shaped crescent with two pointed horns, like the moon symbol', crescent: 'a crescent moon, a thick C-shaped crescent with two pointed horns, like the moon symbol', pillow: 'a pillow box with two curved ends', oval: 'an elongated oval' };
+  const shapeHint = shapeWord ? SHAPE_HINT[shapeWord] : undefined;
   const OPEN_RE = /\b(open(ed)?|inside|insert|tray|lid (lifted|off|removed)|contents?|showing the)\b/i;
   const customerWordsEarly = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-4).join(' ');
   const openEarly = OPEN_RE.test(desc + ' ' + customerWordsEarly) && OPEN_RE.test(customerWordsEarly);
   if (specialShape && sheetMode) {
-    prompt = `All five photos show one and the same ${shapeWord}-shaped rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}: in the closed views, the open view and the three small views alike, the base and the lid are both ${shapeWord}-shaped and the whole silhouette is a ${shapeWord}; in the open view the ${shapeWord}-shaped lid is lifted off and rests beside the ${shapeWord}-shaped base, which is seen from above as a ${shapeWord}-shaped tray holding the product; there is no hinged lid and no rectangular or square box anywhere in the image. ${prompt}`;
+    prompt = `All five photos show one and the same ${shapeWord}-shaped rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}: in the closed views, the open view and the three small views alike, the base and the lid are both ${shapeWord}-shaped and the whole silhouette is a ${shapeWord}; in the open view the ${shapeWord}-shaped lid is lifted off and rests beside the ${shapeWord}-shaped base, which is seen from above as a ${shapeWord}-shaped tray holding the product; there is no hinged lid and no rectangular or square box anywhere in the image. ${prompt}`;
   } else if (specialShape) {
     prompt = openEarly
-      ? `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}, with a ${shapeWord}-shaped lid that has its own side walls (a shallow ${shapeWord} tray, not a flat sheet) and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`
-      : `A single closed ${shapeWord}-shaped rigid gift box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : ''}, lid on and seated, seen as one solid closed shape; the whole silhouette is a ${shapeWord}. ${prompt}`;
+      ? `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}, with a ${shapeWord}-shaped lid that has its own side walls (a shallow ${shapeWord} tray, not a flat sheet) and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`
+      : `A single closed ${shapeWord}-shaped rigid gift box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}, lid on and seated, seen as one solid closed shape; the whole silhouette is a ${shapeWord}. ${prompt}`;
   }
   // The style LoRA was trained on rectangular boxes and pulls unusual silhouettes back to rectangles.
   const qwenSteps = sheetMode || Number(process.env.ALEX_QWEN_STEPS || 4) === 8 ? 8 : 4;
@@ -1015,6 +1018,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   };
   let lastSeed = 0;
   let finalSeed = 0;
+  let qwenFallback = false; // Klein could not spell the brand text: render the final attempt with Qwen-Image
   const renderOnce = async (textIn: string, refImg: { name: string; w: number; h: number } | null, seedIn?: number, dims?: { w: number; h: number }): Promise<Buffer> => {
     // Quote marks around a brand name get printed on the box by every engine: pass the name bare, and drop
     // any "in double quotes" wording the enhancer copied from its own instructions (Qwen printed the quotes).
@@ -1023,7 +1027,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     const prefix = `alex-${Math.random().toString(16).slice(2, 10)}`;
     const seed = seedIn ?? Math.floor(Math.random() * 999_999_999) + 1;
     lastSeed = seed;
-    if (engine === 'qwen' && !refImg) {
+    if ((engine === 'qwen' || qwenFallback) && !refImg) {
       // Qwen-Image 20B (fp8) + Lightning LoRA: strong at shapes, scenes and printed text.
       // It prints quote characters literally, so pass the brand text bare and spell it out once.
       let bare = text.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'")
@@ -1075,10 +1079,23 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     return runComfy(base, wf, prefix);
   };
   /** Render + QA loop: the reviewer's reason is fed back into the next attempt (works for any shape/scene). */
+  // Read the printed text back and compare it with the brand name (Klein wrote "Aura Ca" for "Aura" and the JSON QA let it pass).
+  const verifyText = async (img: Buffer, qa: { ok: boolean; why: string }): Promise<{ ok: boolean; why: string }> => {
+    if (!qa.ok || !expectedText.length || sheetMode) return qa;
+    try {
+      const chk = await singlePhotoCheck(deps, img);
+      const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const want = norm(expectedText.join(''));
+      const got = norm(chk.text);
+      const ok = got === want || (want.length >= 6 && editDistance(got, want) <= 1);
+      if (!ok) { alog(`brand text check: reads "${chk.text}", expected "${expectedText.join(' ')}"`); return { ok: false, why: `the printed brand text must read exactly ${expectedText.join(' ')} and nothing else` }; }
+    } catch (err) { alog(`brand text check failed: ${(err as Error).message}`); }
+    return qa;
+  };
   const renderChecked = async (text: string, refImg: { name: string; w: number; h: number } | null, attempts: number, qaSummary?: string): Promise<{ bytes: Buffer; ok: boolean }> => {
     let bytes = await renderOnce(text, refImg, fixedSeed);
     fixedSeed = undefined;
-    let qa = await checkRender(deps, bytes, expectedText, qaSummary ?? text, openRequested, sheetMode, specialShape ? shapeWord : undefined).catch((err) => ({ ok: true, why: `qa skipped: ${(err as Error).message}` }));
+    let qa = await verifyText(bytes, await checkRender(deps, bytes, expectedText, qaSummary ?? text, openRequested, sheetMode, specialShape ? shapeWord : undefined).catch((err) => ({ ok: true, why: `qa skipped: ${(err as Error).message}` })));
     alog(`mockup QA ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
     const score = (why: string): number => (why === 'ok' ? 0 : why.split(';').length);
     let best = { bytes, ok: qa.ok, score: score(qa.why), seed: lastSeed };
@@ -1091,8 +1108,10 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
         ], false);
         if (pos.content?.trim()) fix = pos.content.trim().slice(0, 200);
       } catch { /* keep raw note */ }
+      // last attempt on Klein with a brand name: let Qwen-Image (strong at text) render it
+      if (i === attempts && engine === 'klein' && expectedText.length && !refImg && /brand text/i.test(qa.why)) { qwenFallback = true; alog('brand text still wrong on Klein: final attempt with Qwen-Image'); }
       bytes = await renderOnce(`${text}\nCorrection (the previous render was rejected): ${fix}`, refImg);
-      qa = await checkRender(deps, bytes, expectedText, qaSummary ?? text, openRequested, sheetMode, specialShape ? shapeWord : undefined).catch(() => ({ ok: true, why: 'qa skipped' }));
+      qa = await verifyText(bytes, await checkRender(deps, bytes, expectedText, qaSummary ?? text, openRequested, sheetMode, specialShape ? shapeWord : undefined).catch(() => ({ ok: true, why: 'qa skipped' })));
       alog(`mockup QA attempt ${i} ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
       if (qa.ok || score(qa.why) < best.score) best = { bytes, ok: qa.ok, score: score(qa.why), seed: lastSeed };
     }
@@ -1216,6 +1235,118 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     return sharp({ create: { width: 1344, height: 1024, channels: 3, background: '#ffffff' } }).composite(layers).png().toBuffer();
   };
 
+  // Presentation sheet composed by us (ALEX_MOCKUP_STYLE=presentation): hero render + open view on top, four captioned
+  // small views below (top, side, size with dimension lines, detail crop) and a feature strip. The open/top/side views are
+  // rendered from the hero as a reference image, so the box never changes between panels; all text is drawn by us.
+  const composePresentation = async (hero: Buffer): Promise<Buffer> => {
+    const allCust = convoText.split('\n').filter((l) => l.startsWith('Customer:')).join(' ');
+    const d = sizePartsFrom(customerWords) ?? sizePartsFrom(desc) ?? sizePartsFrom(allCust);
+    let meta: { title: string; detail: string; features: string[]; product: string } = { title: 'Custom Printed Box', detail: 'Finish & logo', features: ['Custom size', 'Rigid structure', 'Premium finish', 'Printed branding'], product: 'the product' };
+    try {
+      const t = await chat(deps, [
+        { role: 'system', content: 'You write labels for a packaging spec sheet. Reply with ONLY JSON: {"title": 2-4 word product name in Title Case (no brand, no size), "detail": 3-5 word caption for a close-up of the finish and logo, e.g. "Velvet finish & gold logo", "features": 4 short selling points of 2-3 words each (e.g. "Unique moon shape", "Rigid structure", "Premium velvet finish", "Gold foil branding"), "product": 2-4 words naming what goes inside the box (e.g. "a gold necklace", "chocolates", "a perfume bottle")}.' },
+        { role: 'user', content: `Box: ${desc}\nChat: ${customerWords.slice(-600)}` },
+      ], false);
+      const j = parseQaJson((t.content ?? '').trim()) as Partial<typeof meta>;
+      if (j.title) meta.title = String(j.title).replace(/["“”]/g, '').slice(0, 40);
+      if (j.detail) meta.detail = String(j.detail).replace(/["“”]/g, '').slice(0, 44);
+      if (Array.isArray(j.features) && j.features.length >= 3) meta.features = j.features.slice(0, 4).map((f) => String(f).slice(0, 26));
+      if (j.product) meta.product = String(j.product).slice(0, 40);
+    } catch { /* defaults */ }
+    const refImg = await uploadRef(hero, 'image/png');
+    const same = 'Same packaging as in the reference image: the identical box with the same shape, proportions, material, colour, finish and the same printed logo, on the same plain studio backdrop with the same soft lighting; one box only, no people, no hands, no other objects.';
+    const views: { key: 'open' | 'top' | 'side'; text: string }[] = [
+      { key: 'open', text: `${same} Now the box is open: the lid is lifted fully, and ${meta.product} sits inside on a fitted insert, seen from a three-quarter angle slightly from above.` },
+      { key: 'top', text: `${same} The closed box seen from directly above, top-down, centered, the printed logo facing up.` },
+      { key: 'side', text: `${same} The closed box seen straight from the side at eye level, centered, showing its height.` },
+    ];
+    const out: Record<string, Buffer> = {};
+    for (const v of views) {
+      let best: { img: Buffer; score: number } | null = null;
+      for (let t = 1; t <= 2 && refImg; t++) {
+        try {
+          const img: Buffer = await renderOnce(v.text, refImg);
+          const chk = await singlePhotoCheck(deps, img);
+          const problems: string[] = [];
+          if (v.key === 'open') { if (chk.closed) problems.push('not open'); if (!chk.productInside) problems.push('no product inside'); }
+          else if (!chk.closed) problems.push('not closed');
+          if (chk.extraParts) problems.push('extra parts');
+          alog(`presentation ${v.key} view try ${t}: ${problems.length ? problems.join(', ') : 'ok'}`);
+          if (!best || problems.length < best.score) best = { img, score: problems.length };
+          if (problems.length === 0) break;
+        } catch (err) { alog(`presentation ${v.key} view failed: ${(err as Error).message}`); }
+      }
+      if (best) out[v.key] = best.img;
+    }
+    // layout
+    const W = 1600, H = 1560, g = 10;
+    const topH = 760, heroW = 900;
+    const row2Y = topH + g, panelW = Math.floor((W - 3 * g) / 4), imgH = 400, capH = 80;
+    const row3Y = row2Y + imgH + capH + g;
+    const st = await sharp(hero).extract({ left: 0, top: 0, width: 24, height: 24 }).stats();
+    const bgRgb = st.channels.slice(0, 3).map((c) => Math.round(c.mean));
+    const bg = `rgb(${bgRgb.join(',')})`;
+    const dark = bgRgb.reduce((a, b) => a + b, 0) / 3 < 110;
+    const ink = dark ? '#f2f2f2' : '#2b2b2b', inkSoft = dark ? '#c8c8c8' : '#5a5a5a';
+    const fit = async (img: Buffer, w: number, h: number): Promise<Buffer> => sharp(img).resize(w, h, { fit: 'cover', position: 'centre' }).png().toBuffer();
+    const layers: { input: Buffer; left: number; top: number }[] = [];
+    layers.push({ input: await fit(hero, heroW, topH), left: 0, top: 0 });
+    layers.push({ input: await fit(out.open ?? hero, W - heroW - g, topH), left: heroW + g, top: 0 });
+    // size panel: hero with dimension lines
+    const toIn = (v: number) => (d?.unit === 'cm' ? v / 2.54 : d?.unit === 'mm' ? v / 25.4 : v);
+    const fmt = (v: number) => (Number.isInteger(Number(v.toFixed(2))) ? String(Math.round(v)) : v.toFixed(1));
+    const sizeImg0: Buffer = await fit(hero, panelW, imgH);
+    let sizeImg: Buffer = sizeImg0;
+    if (d) {
+      try {
+        const bb = await locateMainBox(deps, sizeImg0, panelW, imgH, true);
+        if (bb) sizeImg = await drawDimensions(sizeImg0, bb, d, panelW, imgH, true);
+      } catch (err) { alog(`presentation dimension lines failed: ${(err as Error).message}`); }
+    }
+    // detail panel: close-up of the lid centre of the hero (where the logo sits)
+    let detail: Buffer = await fit(hero, panelW, imgH);
+    try {
+      const hm = await sharp(hero).metadata();
+      const hw = hm.width ?? 1152, hh = hm.height ?? 864;
+      const bb = await locateMainBox(deps, hero, hw, hh, true);
+      const [x1, y1, x2, y2] = bb ?? [hw * 0.25, hh * 0.2, hw * 0.75, hh * 0.8];
+      const cw = Math.round((x2 - x1) * 0.55), ch = Math.round(cw * imgH / panelW);
+      const cx = Math.round((x1 + x2) / 2 - cw / 2), cy = Math.round(y1 + (y2 - y1) * 0.42 - ch / 2);
+      const left = Math.max(0, Math.min(hw - cw, cx)), top = Math.max(0, Math.min(hh - ch, cy));
+      detail = await sharp(hero).extract({ left, top, width: Math.min(cw, hw - left), height: Math.min(ch, hh - top) }).resize(panelW, imgH, { fit: 'cover' }).png().toBuffer();
+    } catch (err) { alog(`presentation detail crop failed: ${(err as Error).message}`); }
+    const panels: { img: Buffer; cap: string[] }[] = [
+      { img: await fit(out.top ?? hero, panelW, imgH), cap: ['TOP VIEW'] },
+      { img: await fit(out.side ?? hero, panelW, imgH), cap: ['SIDE VIEW'] },
+      { img: sizeImg, cap: d ? ['SIZE', `${fmt(toIn(Number(d.l)))} × ${fmt(toIn(Number(d.w)))} × ${fmt(toIn(Number(d.h)))} INCHES (L × W × H)`] : ['SIZE', 'CUSTOM SIZE ON REQUEST'] },
+      { img: detail, cap: ['DETAIL VIEW', `(${meta.detail.toUpperCase()})`] },
+    ];
+    const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    const capSvg = (lines: string[]): Buffer => Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${panelW}" height="${capH}"><rect width="100%" height="100%" fill="${bg}"/>` +
+      lines.map((l, i) => `<text x="${panelW / 2}" y="${30 + i * 24}" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-size="${i === 0 ? 17 : 14}" letter-spacing="2.5" fill="${i === 0 ? ink : inkSoft}">${esc(l)}</text>`).join('') + '</svg>');
+    panels.forEach((pn, i) => {
+      const x = i * (panelW + g);
+      layers.push({ input: pn.img, left: x, top: row2Y });
+      layers.push({ input: capSvg(pn.cap), left: x, top: row2Y + imgH });
+    });
+    // feature strip + brand line
+    const brand = (expectedText[0] ?? meta.title).toUpperCase();
+    const feats = meta.features.map((f, i) => {
+      const words = f.toUpperCase().split(' ');
+      const l1 = words.slice(0, Math.ceil(words.length / 2)).join(' '), l2 = words.slice(Math.ceil(words.length / 2)).join(' ');
+      const cx = 140 + i * 230;
+      return `<text x="${cx}" y="${H - row3Y - 96}" text-anchor="middle" font-size="12" letter-spacing="2" fill="${inkSoft}">${esc(l1)}</text><text x="${cx}" y="${H - row3Y - 74}" text-anchor="middle" font-size="12" letter-spacing="2" fill="${inkSoft}">${esc(l2)}</text>`;
+    }).join('');
+    const stripSvg = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H - row3Y}"><rect width="100%" height="100%" fill="${bg}"/><g font-family="DejaVu Sans, Arial, sans-serif" transform="translate(0,-70)">${feats}` +
+      `<line x1="${W - 440}" y1="${H - row3Y - 100}" x2="${W - 390}" y2="${H - row3Y - 100}" stroke="${inkSoft}" stroke-width="1.5"/>` +
+      `<text x="${W - 200}" y="${H - row3Y - 94}" text-anchor="middle" font-size="16" letter-spacing="4" fill="${ink}">${esc(brand)}</text>` +
+      `<text x="${W - 200}" y="${H - row3Y - 68}" text-anchor="middle" font-size="12" letter-spacing="2.5" fill="${inkSoft}">${esc(meta.title.toUpperCase())}</text></g></svg>`);
+    layers.push({ input: stripSvg, left: 0, top: row3Y });
+    alog(`presentation sheet composed: title="${meta.title}", views: ${Object.keys(out).join(', ') || 'none'}`);
+    return sharp({ create: { width: W, height: H, channels: 3, background: bg } }).composite(layers).png().toBuffer();
+  };
+  let presentationDone = false;
+
   // ── 2b. shape reference from the real photo library (any shape we have a photo of)
   let shapeRef: { name: string; w: number; h: number } | null = null;
   if (specialShape && shapeWord && !sheetMode) {
@@ -1267,11 +1398,15 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       if (!r.ok) r = await renderChecked(withTrigger(prompt), null, 3);
       bytes = r.bytes;
       if (sheetMode && specialShape && shapeWord) bytes = await repairPanels(bytes);
+      if (!sheetMode && !specialShape && (process.env.ALEX_MOCKUP_STYLE || '').toLowerCase() === 'presentation') {
+        try { bytes = await composePresentation(bytes); presentationDone = true; }
+        catch (err) { alog(`presentation sheet failed, sending the single render: ${(err as Error).message}`); }
+      }
     }
   }
 
   // ── 4. size lines (sheet or single text render), watermark, store, post
-  if (sheetMode || (engine === 'qwen' && !ref)) {
+  if ((sheetMode || !ref) && !presentationDone) {
     const allCustomer = convoText.split('\n').filter((l) => l.startsWith('Customer:')).join(' ');
     const dims = sizePartsFrom(customerWords) ?? sizePartsFrom(desc) ?? sizePartsFrom(allCustomer);
     if (dims) {
@@ -1313,7 +1448,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   }
   return ref
     ? `Mockup sent to the customer, built on the image they shared (their own box/design). Reply in at most 15 words: one short line that this is the mockup from their design, then one short question.${note}`
-    : `${sheetMode ? 'Mockup presentation sheet sent to the customer (closed box, open view with the product inside, and side views, with its size). ' : 'Mockup image sent to the customer. '}Reply in at most 15 words: one short line that this is their mockup, then one short question (changes, or the next missing detail such as quantity).${expectedText.length ? ` The brand text "${expectedText.join(', ')}" is already on it; never ask whether to add it.` : ''} No adjectives, no disclaimers.${note}`;
+    : `${sheetMode || presentationDone ? 'Mockup presentation sheet sent to the customer (main photo, size specs, open view, dimensions and front view). ' : 'Mockup image sent to the customer. '}Reply in at most 15 words: one short line that this is their mockup, then one short question (changes, or the next missing detail such as quantity).${expectedText.length ? ` The brand text "${expectedText.join(', ')}" is already on it; never ask whether to add it.` : ''} No adjectives, no disclaimers.${note}`;
 }
 
 async function handover(deps: AppDeps, conversationId: string, reason: string, summary: string): Promise<string> {
