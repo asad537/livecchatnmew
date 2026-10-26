@@ -570,13 +570,15 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
       { type: 'text', text:
         `Requested mockup: ${summary.slice(0, 700)}\n` +
         `Judge the image and return JSON with these keys:\n` +
-        `"silhouette_ok": true/false — the box outline matches the requested shape (heart = heart outline; polygons: count the sides, hexagon 6, octagon 8; mailer/rigid = rectangular). Construction subtype, flute texture and closure style do NOT matter.\n` +
+        `"silhouette_ok": true/false — the box outline matches the requested shape (heart = heart outline; the BASE's outer walls must have that outline: a square or rectangular box with the shape merely printed, embossed, cut into or raised on its lid is WRONG; star = exactly five pointed tips (a four-pointed star or a plus shape is WRONG); moon/crescent = a C-shaped crescent with two pointed horns and a concave inner edge (a half-circle, D shape or full circle is WRONG); triangle = three straight sides with a flat triangular lid (a pyramid on a square base is WRONG); hexagon = exactly 6 straight sides (8 sides = octagon = WRONG); polygons: count the sides, hexagon 6, octagon 8; mailer/rigid = rectangular). Construction subtype, flute texture and closure style do NOT matter.\n` +
         `"colour_ok": true/false — main colour/finish as requested.\n` +
         `"text_ok": true/false/null — ${expectedText.length ? `the printed brand text reads exactly ${expectedText.map((t) => `"${t}"`).join(' and ')} (letter case/font do not matter; wrong, missing or extra letters = false)` : 'null if no brand text was requested; false if random readable or garbled text appears'}.\n` +
         `"boxes": number of separate boxes (base trays) visible. A detached lid lying beside its base is part of the SAME box, not a second box — even if the lid has side walls.\n` +
         `"lids": number of lids visible (one detached lid beside one base = 1 lid, 1 box).\n` +
         `"lid_state": one of "closed_flush" (lid on, fits the base, no gap; a closed mailer/tuck box with its front tab tucked in also counts), "closed_shoulder" (lid fully seated on a base that shows a rim/neck/shoulder below the lid — a normal closed shoulder box), "closed_ajar" (lid on but partly open/tilted or a flap open), "off_resting" (lid removed and resting on the table or leaning on the box, top face up), "floating" (lid in mid-air / not touching anything), "flat_sheet" (the lid is a flat panel with no side walls), "none".\n` +
         `"defects": short note on impossible geometry, duplicated parts, or none.\n` +
+        (/^(moon|crescent)$/i.test(shapeWord ?? '') ? `"concave_gap": true/false — the box outline (its outer walls, not a design on the lid) has a large inward-curving bite out of one side, leaving a C shape with two pointed tips; a D shape, half-circle, full circle or square box = false.\n` : '') +
+        (shapeWord ? `"shape_count": a number, counted on the outer walls of the box base (a design on the lid does not count) — for a star: how many pointed tips the box outline has; for a crescent/moon: how many pointed horns it has (a half-circle or D shape has 0); for a polygon: how many straight sides the box base has; for a heart: 1 if it has the heart notch and point, else 0; otherwise 0.\n` : '') +
         `Ignore the website watermark at the bottom.` },
     ] as unknown as string },
   ], false);
@@ -592,6 +594,10 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
   const lid = String(j.lid_state ?? 'none');
   const problems: string[] = [];
   if (j.silhouette_ok === false) problems.push('wrong box shape');
+  const SHAPE_COUNT: Record<string, [number, number, string]> = { star: [5, 6, 'five pointed tips'], moon: [2, 2, 'two pointed horns and a concave inner curve'], crescent: [2, 2, 'two pointed horns and a concave inner curve'], triangle: [3, 3, 'three straight sides'], triangular: [3, 3, 'three straight sides'], hexagon: [6, 6, 'six straight sides'], hexagonal: [6, 6, 'six straight sides'], octagon: [8, 8, 'eight straight sides'], octagonal: [8, 8, 'eight straight sides'], heart: [1, 1, 'a heart outline with the top notch and bottom point'] };
+  const want = shapeWord ? SHAPE_COUNT[shapeWord.toLowerCase()] : undefined;
+  if (/^(moon|crescent)$/i.test(shapeWord ?? '') && j.concave_gap === false && !problems.includes('wrong box shape')) problems.push('the box itself must be a C-shaped crescent with a deep concave inner curve and two pointed horns');
+  if (want && j.shape_count !== undefined && j.shape_count !== null && !Number.isNaN(Number(j.shape_count)) && (Number(j.shape_count) < want[0] || Number(j.shape_count) > want[1]) && !problems.includes('wrong box shape')) problems.push(`the box outline must be a ${shapeWord} with ${want[2]}`);
   if (j.colour_ok === false) problems.push('wrong colour');
   if (j.text_ok === false) problems.push(expectedText.length ? 'brand text misspelled' : 'unwanted text on the box');
   if (Number(j.boxes ?? 1) > 1) problems.push('more than one box');
@@ -651,7 +657,7 @@ async function sheetPanels(png: Buffer): Promise<{ x: number; y: number; w: numb
   }
   return panels;
 }
-const SHAPE_QUESTION = 'name the outline shape of the box BASE as seen from above (its footprint): one of heart, round, hexagon, octagon, triangle, square, rectangle, oval, star, diamond, pillow, tube, pyramid, other. Judge ONLY the outer walls of the box base. Ignore the lid, and ignore whatever sits inside the box: a star-shaped soap or a heart-shaped chocolate lying in a tray with four straight walls means the box is "square" or "rectangle". A base with four corners is "square" or "rectangle" even when its lid or its contents have another shape.';
+const SHAPE_QUESTION = 'name the outline shape of the box BASE as seen from above (its footprint): one of heart, round, hexagon, octagon, triangle, square, rectangle, oval, star, crescent, diamond, pillow, tube, pyramid, other ("star" only for five or more pointed tips; "crescent" only for a C shape with two horns and a concave inner edge, a half-circle is "other"; count straight sides exactly: 6 = hexagon, 8 = octagon). Judge ONLY the outer walls of the box base. Ignore the lid, and ignore whatever sits inside the box: a star-shaped soap or a heart-shaped chocolate lying in a tray with four straight walls means the box is "square" or "rectangle". A base with four corners is "square" or "rectangle" even when its lid or its contents have another shape.';
 /** Levenshtein distance (small strings only). */
 function editDistance(a: string, b: string): number {
   const dp: number[] = Array.from({ length: b.length + 1 }, (_, j) => j);
@@ -764,7 +770,7 @@ async function checkSheet(deps: AppDeps, png: Buffer, expectedText: string[], su
         `This image is a grid of several photos of ONE box design. Judge it and return JSON with these keys:\n` +
         `"same_box": true/false — every panel shows the same box (same shape, colour, lid style, logo); a panel showing a clearly different box = false.\n` +
         `"main_closed": true/false — the large main photo shows the box fully closed with its lid seated (no gap, nothing floating or ajar).\n` +
-        `"silhouette_ok": true/false — in the main photo the box outline matches the requested shape (heart = heart outline; polygons: count the sides; rectangular otherwise).\n` +
+        `"silhouette_ok": true/false — in the main photo the box outline matches the requested shape (heart = heart outline; the BASE's outer walls must have that outline: a square or rectangular box with the shape merely printed, embossed, cut into or raised on its lid is WRONG; star = exactly five pointed tips (a four-pointed star or a plus shape is WRONG); moon/crescent = a C-shaped crescent with two pointed horns and a concave inner edge (a half-circle, D shape or full circle is WRONG); triangle = three straight sides with a flat triangular lid (a pyramid on a square base is WRONG); hexagon = exactly 6 straight sides (8 sides = octagon = WRONG); polygons: count the sides; rectangular otherwise).\n` +
         `"panels_wrong_shape": number of panels (out of all panels, including the open view) where the box or its lid does NOT have the requested shape (e.g. a rectangular box in a heart-box sheet).\n` +
         `"colour_ok": true/false — main colour/finish as requested.\n` +
         `"text_ok": true/false/null — ${expectedText.length ? `the printed brand text on the box reads exactly ${expectedText.map((t) => `"${t}"`).join(' and ')} (case/font do not matter; wrong, missing, extra or garbled letters anywhere on the box or inside it = false)` : 'null if no brand text was requested; false if random readable or garbled text appears on the box or inside it'}. Dimension labels beside the box do not count.\n` +
@@ -951,25 +957,33 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const specialShape = Boolean(shapeWord) && !ref && !revision;
   const SIDES: Record<string, string> = { triangle: 'three', triangular: 'three', pentagon: 'five', hexagon: 'six', hexagonal: 'six', octagon: 'eight', octagonal: 'eight', diamond: 'four' };
   const sidesWord = shapeWord ? SIDES[shapeWord] : undefined;
-  const SHAPE_HINT: Record<string, string> = { moon: 'a crescent moon, a thick C-shaped crescent with two pointed horns, like the moon symbol', crescent: 'a crescent moon, a thick C-shaped crescent with two pointed horns, like the moon symbol', pillow: 'a pillow box with two curved ends', oval: 'an elongated oval' };
+  // Klein draws a flat crescent as a D shape from a low 3/4 angle; told to look down on it, it draws both horns every time.
+  const MOON_HINT = 'a crescent moon, a thick C-shaped crescent with two sharp pointed horns and a deep concave inner curve, like the moon symbol, lying flat on the table and seen from a high angle so the whole crescent outline with both horns is clearly visible';
+  const SHAPE_HINT: Record<string, string> = { star: 'a regular five-pointed star with five sharp pointed tips, one tip pointing away from the camera', moon: MOON_HINT, crescent: MOON_HINT, pillow: 'a pillow box with two curved ends', oval: 'an elongated oval' };
   const shapeHint = shapeWord ? SHAPE_HINT[shapeWord] : undefined;
+  const flatLid = /^(triangle|triangular|hexagon|hexagonal|octagon|octagonal|star|diamond)$/.test(shapeWord ?? '') ? ' with a flat lid of the same outline, lying flat on the table like a shallow cake box' : '';
   const OPEN_RE = /\b(open(ed)?|inside|insert|tray|lid (lifted|off|removed)|contents?|showing the)\b/i;
   const customerWordsEarly = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-4).join(' ');
   const openEarly = OPEN_RE.test(desc + ' ' + customerWordsEarly) && OPEN_RE.test(customerWordsEarly);
   if (specialShape && sheetMode) {
-    prompt = `All five photos show one and the same ${shapeWord}-shaped rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}: in the closed views, the open view and the three small views alike, the base and the lid are both ${shapeWord}-shaped and the whole silhouette is a ${shapeWord}; in the open view the ${shapeWord}-shaped lid is lifted off and rests beside the ${shapeWord}-shaped base, which is seen from above as a ${shapeWord}-shaped tray holding the product; there is no hinged lid and no rectangular or square box anywhere in the image. ${prompt}`;
+    prompt = `All five photos show one and the same ${shapeWord}-shaped rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}${flatLid}: in the closed views, the open view and the three small views alike, the base and the lid are both ${shapeWord}-shaped and the whole silhouette is a ${shapeWord}; in the open view the ${shapeWord}-shaped lid is lifted off and rests beside the ${shapeWord}-shaped base, which is seen from above as a ${shapeWord}-shaped tray holding the product; there is no hinged lid and no rectangular or square box anywhere in the image. ${prompt}`;
   } else if (specialShape) {
     prompt = openEarly
-      ? `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}, with a ${shapeWord}-shaped lid that has its own side walls (a shallow ${shapeWord} tray, not a flat sheet) and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`
-      : `A single closed ${shapeWord}-shaped rigid gift box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}, lid on and seated, seen as one solid closed shape; the whole silhouette is a ${shapeWord}. ${prompt}`;
+      ? `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}${flatLid}, with a ${shapeWord}-shaped lid that has its own side walls (a shallow ${shapeWord} tray, not a flat sheet) and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`
+      : `A single closed ${shapeWord}-shaped rigid gift box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}${flatLid}, lid on and seated, seen as one solid closed shape; the whole silhouette is a ${shapeWord}. ${prompt}`;
   }
   // The style LoRA was trained on rectangular boxes and pulls unusual silhouettes back to rectangles.
   const qwenSteps = sheetMode || Number(process.env.ALEX_QWEN_STEPS || 4) === 8 ? 8 : 4;
   // Style LoRA (trained on Klein) only applies to the Klein engine and rectangular boxes.
-  const lora = engine === 'klein' && !specialShape ? deps.config.alex.mockupLora : null;
-  if (specialShape) alog(`special shape "${shapeWord}": LoRA off`);
-  const withTrigger = (p: string): string => (lora ? `pbxbox ${p.charAt(0).toLowerCase()}${p.slice(1)}` : p);
-  const expectedText = [...prompt.replace(/[“”]/g, '"').matchAll(/"([^"]{2,40})"/g)].map((m) => m[1]).filter((t) => !/^(pbxbox|studio)/i.test(t));
+  // Klein LoRAs: the style LoRA for regular boxes, the shape LoRA (trained on heart/star/moon/hexagon... library photos) for special shapes.
+  const shapeLora = process.env.ALEX_SHAPE_LORA || null;
+  const lora = engine === 'klein' ? (specialShape ? shapeLora : deps.config.alex.mockupLora) : null;
+  const loraStrength = specialShape && shapeLora ? Number(process.env.ALEX_SHAPE_LORA_STRENGTH || 0.12) : deps.config.alex.mockupLoraStrength;
+  if (specialShape) alog(`special shape "${shapeWord}": ${lora ? `shape LoRA ${lora} @ ${loraStrength}` : 'LoRA off'}`);
+  if (specialShape) prompt = prompt.replace(/\b(lid top and front panel|front panel and lid top|front panel|front face)\b/gi, 'lid top');
+  if (specialShape) prompt = prompt.replace(/\b(captured |shot |seen |photographed )?(at|from) a (3\/4|three[- ]quarter) angle,? ?(slightly )?(from )?above/gi, '$1from a high three-quarter angle looking down so the whole outline of the box is visible');
+  const withTrigger = (p: string): string => (lora ? `${specialShape ? 'pbxshape' : 'pbxbox'} ${p.charAt(0).toLowerCase()}${p.slice(1)}` : p);
+  let expectedText = [...prompt.replace(/[“”]/g, '"').matchAll(/"([^"]{2,40})"/g)].map((m) => m[1]).filter((t) => !/^(pbxbox|studio)/i.test(t));
   const customerWords = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-4).join(' ');
   // Klein needs the two-stage trick for open views; Qwen-Image renders them directly.
   const openRequested = OPEN_RE.test(customerWords);
@@ -1019,6 +1033,11 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   let lastSeed = 0;
   let finalSeed = 0;
   let qwenFallback = false; // Klein could not spell the brand text: render the final attempt with Qwen-Image
+  // Klein 4B flattens polygon boxes into squares or pyramids at any LoRA strength and gives stars 6-7 tips; Qwen-Image draws them right first time.
+  if (engine === 'klein' && specialShape && /^(triangle|triangular|hexagon|hexagonal|octagon|octagonal|pentagon|diamond|star)$/.test(shapeWord ?? '')) {
+    qwenFallback = true;
+    alog(`polygon shape "${shapeWord}": rendering with Qwen-Image instead of Klein`);
+  }
   const renderOnce = async (textIn: string, refImg: { name: string; w: number; h: number } | null, seedIn?: number, dims?: { w: number; h: number }): Promise<Buffer> => {
     // Quote marks around a brand name get printed on the box by every engine: pass the name bare, and drop
     // any "in double quotes" wording the enhancer copied from its own instructions (Qwen printed the quotes).
@@ -1035,7 +1054,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       // No brand given: any clause that even mentions a logo, brand, lettering or label makes Qwen print gibberish.
       if (expectedText.length === 0) bare = bare.replace(/,?[^,.;]*\b(logo\w*|brand\w*|letter\w*|typograph\w*|monogram\w*|emblem\w*|wordmark\w*|label\w*|printed text|readable text|text)\b[^,.;]*/gi, '').replace(/\s+/g, ' ').replace(/\.\s*\./g, '.');
       const spelled = expectedText.length
-        ? ` Printed on the box, centered: the brand name ${expectedText.join(' and ')}. Nothing else is printed anywhere on the box: no other words, letters, initials, monograms, emblems, marks or small secondary lines under the name${sheetMode ? ', and no numbers, labels or other text anywhere in the image' : ''}.`
+        ? ` Printed on the box, centered: the brand name ${expectedText.join(' and ')}, as the single piece of printing on the box, standing alone with clear empty space around it; every other surface is blank${sheetMode ? ', and the rest of the image is clean' : ''}.`
         : ' The box is plain and unprinted: smooth blank surfaces with a thin foil border line.';
       text = bare + spelled + (sheetMode && !dims ? ' Every panel shows the identical box; nothing else besides the box, its insert and its product.' : dims ? ' Exactly one box in the frame, nothing else besides the box, its insert and its product.' : ' Exactly one box in the frame on an empty seamless backdrop, nothing else in the picture.');
       const wq: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
@@ -1065,7 +1084,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       '10': { class_type: 'SaveImage', inputs: { filename_prefix: prefix, images: ['9', 0] } },
     };
     if (lora) {
-      wf['11'] = { class_type: 'LoraLoaderModelOnly', inputs: { lora_name: lora, strength_model: deps.config.alex.mockupLoraStrength, model: ['1', 0] } };
+      wf['11'] = { class_type: 'LoraLoaderModelOnly', inputs: { lora_name: lora, strength_model: loraStrength, model: ['1', 0] } };
       wf['8'].inputs.model = ['11', 0];
     }
     if (refImg) {
@@ -1349,7 +1368,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
 
   // ── 2b. shape reference from the real photo library (any shape we have a photo of)
   let shapeRef: { name: string; w: number; h: number } | null = null;
-  if (specialShape && shapeWord && !sheetMode) {
+  if (specialShape && shapeWord && !sheetMode && !(engine === 'klein' && shapeLora)) {
     try {
       const row = await deps.db.get<{ path: string; caption: string }>(
         `SELECT path, caption FROM alex_photos WHERE is_product = 1 AND (caption LIKE ? OR tags LIKE ?) ORDER BY RAND() LIMIT 1`,
@@ -1391,11 +1410,26 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       // experimental: every panel rendered singly (closed views came out with lids askew; the grid + repair below does better)
       bytes = await composeSpecialSheet();
     } else {
-      let r = shapeRef
-        ? await renderChecked(`Use the reference image only for the box SHAPE (a closed ${shapeWord}-shaped box, lid seated) and proportions; new colours, finish and logo exactly as described: ${prompt}`, shapeRef, 2)
-        : { bytes: Buffer.alloc(0), ok: false };
-      if (shapeRef) alog(`library shape reference render ${r.ok ? 'ok' : 'rejected → text engine'}`);
-      if (!r.ok) r = await renderChecked(withTrigger(prompt), null, 3);
+      // Klein draws a branded crescent as a D shape or a box, while the plain crescent is reliable: render it plain first,
+      // then add the name by image-to-image (the shape survives that edit).
+      const twoStage = specialShape && /^(moon|crescent)$/.test(shapeWord ?? '') && expectedText.length > 0 && engine === 'klein' && !qwenFallback && !sheetMode;
+      let r: { bytes: Buffer; ok: boolean } = { bytes: Buffer.alloc(0), ok: false };
+      if (twoStage) {
+        const want = expectedText;
+        expectedText = [];
+        const plainPrompt = prompt.replace(/,?[^,.;]*\b(logo\w*|brand\w*|letter\w*|typograph\w*|monogram\w*|emblem\w*|wordmark\w*|label\w*|printed text|readable text|reading|text)\b[^,.;]*/gi, '').replace(/\s+/g, ' ').replace(/\.\s*\./g, '.') + ' The box is plain and unprinted with a thin foil border line.';
+        const s1 = await renderChecked(withTrigger(plainPrompt), null, 3);
+        expectedText = want;
+        alog(`two-stage ${shapeWord}: plain box ${s1.ok ? 'ok' : 'best effort'}, now adding the brand text`);
+        const plainRef = await uploadRef(s1.bytes, 'image/png');
+        const brandSentence = (prompt.match(/[^.]*\b(logo|brand name|wordmark|reading)\b[^.]*\./i) ?? [''])[0].trim();
+        if (plainRef) r = await renderChecked(`Same packaging as in the reference image, identical ${shapeWord} shape, colour, finish, camera angle and background. Now the brand name ${want.join(' and ')} is printed once, centered on the lid top, as the only printing on the box. ${brandSentence}`, plainRef, 2, prompt);
+        if (r.bytes.length === 0) r = s1;
+      } else if (shapeRef) {
+        r = await renderChecked(`Use the reference image only for the box SHAPE (a closed ${shapeWord}-shaped box, lid seated) and proportions; new colours, finish and logo exactly as described: ${prompt}`, shapeRef, 2);
+        alog(`library shape reference render ${r.ok ? 'ok' : 'rejected → text engine'}`);
+      }
+      if (!r.ok && !twoStage) r = await renderChecked(withTrigger(prompt), null, 3);
       bytes = r.bytes;
       if (sheetMode && specialShape && shapeWord) bytes = await repairPanels(bytes);
       if (!sheetMode && !specialShape && (process.env.ALEX_MOCKUP_STYLE || '').toLowerCase() === 'presentation') {
@@ -1431,7 +1465,8 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const fileId = newId();
   const compressedPath = path.join(privateDir, `${fileId}.gz`);
   await pipeline(Readable.from(bytes), createGzip(), fs.createWriteStream(compressedPath));
-  const name = asPhoto ? `${desc.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'box'}.png` : 'mockup.png';
+  const slugSrc = /\b(customer|described|chat)\b/i.test(desc.slice(0, 60)) ? `${shapeWord ? shapeWord + ' shaped ' : ''}box` : desc;
+  const name = asPhoto ? `${slugSrc.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'box'}.png` : 'mockup.png';
   await deps.db.run(
     `INSERT INTO files (id, conversation_id, uploader_type, uploader_id, original_name, mime, size,
        scan_status, stored_path, compressed_path, created_at)
