@@ -505,7 +505,7 @@ const SHEET_ENHANCER_SYSTEM =
   '"Professional packaging presentation sheet for a <product> box, one image laid out as a grid of five photos with thin white gutters. Large main photo top-left: a closed <full box description: style and real geometry, proportions in words, material, colour, finish, decorative accents, logo or brand text and where it sits> standing on <scene>. Top-right photo: the same box open <how this style opens>, showing <fitted insert and the product> inside. Bottom row, three smaller photos of the same closed box: seen straight from the front, from a three-quarter angle, and from directly above. Every panel shows the identical box and design. Photorealistic product photography, <lighting>, sharp." ' +
   'Rules: (1) The product decides the style: perfume, cosmetics, jewellery, watches, premium gifts = rigid box with a full-depth magnetic lid or a hinged book-style lid (thick walls, matte wrapped paper, optionally a thin gold or silver foil border line on the front); chocolate or sweets = rigid two-piece box with a tray insert; candle = rigid two-piece or tuck-top box; mailer = corrugated roll-end tuck-front box with a hinged lid; tuck-end = slim folding carton; pouch = stand-up pouch; heart, round, hexagon or tube boxes: the box AND its lid keep that silhouette in all five photos (the open view shows the same shaped lid lifted off and resting beside the shaped base, never a hinged rectangular box). ' +
   'Dimensions: describe the proportions in words only (wider than tall, slim depth, cube-like, tall and narrow...); never write numbers, units, dimension arrows or labels anywhere in the prompt. The logo is the brand name alone: no emblem, monogram or initial above or beside it. ' +
-  '(2) Printed text: ONLY a brand or logo name the customer explicitly gave as such, written in double quotes, as a foil or printed logo centered on the lid or front panel; product words, requests and misspellings are not brand text. If no brand name was given, describe the box as plain and unprinted (blank surfaces with a thin foil border line) and never mention a logo, text, lettering or label. Never slogans, taglines, website names or anything from the company side, and no other text anywhere. ' +
+  '(2) Printed text: ONLY a brand or logo name the customer explicitly gave as such, written in double quotes (the quotes mark the name for the system; never write the words "quotes" or "quotation marks" in the prompt and never describe the name as quoted), as a foil or printed logo centered on the lid or front panel; product words, requests and misspellings are not brand text. If no brand name was given, describe the box as plain and unprinted (blank surfaces with a thin foil border line) and never mention a logo, text, lettering or label. Never slogans, taglines, website names or anything from the company side, and no other text anywhere. ' +
   '(3) Colours, material and finish exactly as requested; if not stated, choose what suits the product. The scene suits the product (cream marble table with blurred gold decor for perfume or cosmetics, rustic wood for candles, clean white studio for mailers). ' +
   '(4) The open view shows the matching product inside (a perfume bottle, chocolates, a candle, the item they pack) sitting in a fitted insert; no people, no hands. ' +
   '(5) If the customer asked for a window (die-cut window, clear window, PVC window), it is part of the box in EVERY closed view: name its shape (round, square, rectangular, heart, oval) and position on the front panel or lid, with the product visible through it; never leave it out. Output only the prompt.';
@@ -986,6 +986,10 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       prompt = `${prompt} ${prop}${foot}`;
     }
   }
+  // Mailer / shipping boxes: Qwen keeps lifting the roll-end lid; describe the closed box as a sealed block.
+  if (!wantsOpen && /\b(mailer|shipping box|corrugated box|e-?commerce box)\b/i.test(`${desc} ${customerWords} ${prompt}`)) {
+    prompt = `${prompt} Shown completely closed like a sealed shipping carton: the lid lies flat and level with the top edges, the front tuck flap is pushed fully into its slot, every side is a flat unbroken panel and no opening, gap or lifted flap is visible anywhere.`;
+  }
   alog(`mockup prompt [${engine}]${sheetMode ? ' [sheet]' : ''}${revision ? ' [revision]' : ''}${ref ? ' (reference: ' + ref.name + ')' : ''}${specialShape ? ' [shape: ' + shapeWord + ']' : ''}${wantsOpen ? ' [two-stage open view]' : ''}: ${prompt.slice(0, 1500)}`);
 
   // ── 2. render helpers
@@ -1012,8 +1016,10 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   let lastSeed = 0;
   let finalSeed = 0;
   const renderOnce = async (textIn: string, refImg: { name: string; w: number; h: number } | null, seedIn?: number, dims?: { w: number; h: number }): Promise<Buffer> => {
-    // Quote marks around a brand name get printed on the box by every engine: pass the name bare.
-    let text = textIn.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'");
+    // Quote marks around a brand name get printed on the box by every engine: pass the name bare, and drop
+    // any "in double quotes" wording the enhancer copied from its own instructions (Qwen printed the quotes).
+    let text = textIn.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'")
+      .replace(/,?\s*(written |set |shown |displayed |enclosed |wrapped )?(in|with|inside|within|between|surrounded by) (double |single |curly |straight )?(quotes|quotation marks|inverted commas|quote marks)/gi, '');
     const prefix = `alex-${Math.random().toString(16).slice(2, 10)}`;
     const seed = seedIn ?? Math.floor(Math.random() * 999_999_999) + 1;
     lastSeed = seed;
