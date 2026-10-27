@@ -1088,7 +1088,10 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     // any "in double quotes" wording the enhancer copied from its own instructions (Qwen printed the quotes).
     let text = textIn.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'")
       .replace(/,?\s*(written |set |shown |displayed |enclosed |wrapped )?(in|with|inside|within|between|surrounded by) (double |single |curly |straight )?(quotes|quotation marks|inverted commas|quote marks)/gi, '');
-    if (cfEnabled && !refImg) return await cfRender(text);
+    if (cfEnabled && !refImg) {
+      try { return await cfRender(text); }
+      catch (err) { alog(`Cloudflare render failed, falling back to the local engine: ${(err as Error).message}`); }
+    }
     const prefix = `alex-${Math.random().toString(16).slice(2, 10)}`;
     const seed = seedIn ?? Math.floor(Math.random() * 999_999_999) + 1;
     lastSeed = seed;
