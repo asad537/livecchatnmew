@@ -538,7 +538,7 @@ async function runComfy(base: string, workflow: Record<string, { class_type: str
   if (!queued.ok) throw new Error(`ComfyUI /prompt ${queued.status}`);
   const { prompt_id: promptId } = (await queued.json()) as { prompt_id: string };
   let image: ComfyImage | null = null;
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + 240_000;
   while (Date.now() < deadline && !image) {
     await sleep(1500);
     const h = await fetch(`${base}/history/${promptId}`, { signal: AbortSignal.timeout(15_000) });
@@ -897,6 +897,8 @@ const PHOTO_WAIT_MSGS = [
   'Let me grab a picture of that, one minute please.',
 ];
 const photoFallback = new Set<string>();
+/** Conversations whose picture tool failed this turn: the reply must not pretend a picture was sent. */
+const pictureFailed = new Set<string>();
 const MOCKUP_WAIT_MSGS = [
   'Sure, creating your mockup now, it can take a minute or two.',
   'On it, your mockup is being generated, give me a moment.',
@@ -1575,6 +1577,10 @@ async function runTool(deps: AppDeps, conversationId: string, call: ToolCall, la
     }
   } catch (err) {
     alog(`tool ${call.function.name} FAILED: ${(err as Error).message}`);
+    if (call.function.name === 'make_mockup' || call.function.name === 'send_photo') {
+      pictureFailed.add(conversationId);
+      return 'The picture could not be made right now. Tell the customer in one short sentence that the picture will follow shortly, then ask the next question. Do not say "here is", do not describe the picture, do not offer options.';
+    }
     return `Tool failed (${(err as Error).message}). Apologise briefly and continue without it.`;
   }
 }
@@ -1900,14 +1906,14 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
             const hadPhoto = convo.some((m) => m.role === 'assistant' && typeof (m as { content: unknown }).content === 'string' && /photo was sent to the customer here:/.test((m as { content: string }).content));
             const PRODUCT_RE = /\b(box|boxes|mailer|mailers|pouch|pouches|sleeve|sleeves|label|labels|bag|bags|carton|cartons|tube|tubes|tray|trays|insert|inserts|packaging|display)\b/i;
             const shortLu = lu.trim().split(/\s+/).length <= 10;
-            const claimsPhoto = /\b(here is|here's|here are|attached|sending|i've sent|i have sent|sent you)\b[^.!?]*\b(photo|picture|image|pic|sample|example|option)s?\b/i.test(out.content ?? '')
+            const claimsPhoto = /\b(here is|here's|here are|attached|sending|i've sent|i have sent|sent you|i('ll| will| can|'m going to| am going to) (send|share|get|show|grab|pull up)|let me (send|share|get|show|grab|pull up)|i am sending)\b[^.!?]*\b(photo|picture|image|pic|sample|example|option)s?\b/i.test(out.content ?? '')
               // Roman Urdu promise: "photo bhejta hoon", "tasveer dikhata hoon", "bhej raha hoon"
               || (/\b(photo|picture|image|pic|tasveer|tasvir|sample)s?\b/i.test(out.content ?? '') && /\b(bhejt[ai]|bhej (raha|rahi)|dikhat[ai]|dikha (raha|rahi)|send kart[ai]|send kar (raha|rahi))\b/i.test(out.content ?? ''));
             const complaint = /\b(you (are|were|said|sent|keep|gave|just)|asked for|i asked|i said|not what|wrong|didn'?t|don'?t|why|instead of)\b/i.test(lu);
             const physicalSample = /\b(physical|real|actual|hard|printed|free) samples?\b|\bsamples? (to|at) my\b|\b(ship|mail|post|courier|deliver) (me )?(a |some |the )?samples?\b|\bsend (me )?(a |some |the )?samples? (to|at|by|home)\b/i.test(lu);
             const morePhotos = hadPhoto && shortLu && /\b(more|another|other|next|different|else|again)\b/i.test(lu);
             const wantsPhoto = !complaint && !physicalSample && (morePhotos || (/\b(photo|picture|pic|image|example|sample|tasveer|tasvir)s?\b/i.test(lu) && (/\b(show|see|have|send|share|look|of|bhej\w*|dikha\w*|dekh\w*|chahiye|chaiye|chahye|do|dein|den|hai|ha|ki|ka)\b/i.test(lu) || hadPhoto))
-              || /\bshow me\b/i.test(lu)
+              || /\bshow me\b|\b(can|could|may) (i|we) (see|have a look|take a look)\b|\blet me see\b|\bi('d| would) (like|love) to see\b/i.test(lu)
               || (hadPhoto && shortLu && PRODUCT_RE.test(lu) && !wantsMockup)
               || claimsPhoto);
             if (complaintEarly && (claimsMockup || claimsPhoto)) {
@@ -1953,7 +1959,9 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       }
       alog(`draft: ${(reply ?? '').slice(0, 100)}`);
       const allCustomerText = history.filter((m) => m.sender_type === 'VISITOR' && m.kind === 'TEXT').map((m) => m.body ?? '').join(' ');
-      const qtyKnown = QTY_RE.test(allCustomerText);
+      // A customer who answers "300" or "2,000 pcs" on its own has given the quantity even though the joined text has no unit word.
+      const bareQty = history.some((m) => m.sender_type === 'VISITOR' && m.kind === 'TEXT' && /^\s*(\d{1,3}(,\d{3})+|\d{2,7})\s*(k|pcs|pieces|units|boxes)?\s*[.!]?\s*$/i.test(m.body ?? ''));
+      const qtyKnown = QTY_RE.test(allCustomerText) || bareQty;
       if (reply && contactTurn) {
         // Keep the thank-you + "team will email the quote"; a question only while the quantity is unknown.
         const parts = sentencesOf(reply);
@@ -1971,6 +1979,11 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       // The customer asked for a photo and got a rendered picture: never call it a mockup.
       if (reply && photoFallback.delete(conversationId)) {
         reply = reply.replace(/\b(a |the |your |this |that )?(mock-?ups?|renders?|renderings?|design concepts?)\b/gi, (_m, art) => `${art ?? ''}picture`).replace(/\b(generated|rendered|created) (picture|image)\b/gi, 'picture');
+      }
+      if (reply && pictureFailed.delete(conversationId) && /\b(here is|here's|here are|attached|please find|below is)\b/i.test(reply)) {
+        const rest = sentencesOf(reply).filter((p) => !/\b(here is|here's|here are|attached|please find|below is)\b/i.test(p) && !/\?\s*$/.test(p)).join('').trim();
+        reply = `The picture is taking a little longer than usual, I will send it shortly. ${rest}`.trim();
+        alog('picture tool failed: removed the here-is claim');
       }
       if (!reply) return;
       if (!messages.some((m) => m.role === 'tool') && /\b(i('ve| have)? (just )?(updated|changed|revised|regenerated|re-?rendered|adjusted|generated|created|sent|shared|attached|uploaded))\b/i.test(reply)) {
