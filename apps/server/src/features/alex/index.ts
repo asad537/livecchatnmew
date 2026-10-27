@@ -1004,23 +1004,27 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   // a special-shape box whose contents the customer named is shown open with the product, on a styled table, in one Klein render.
   const PRODUCT_INSIDE_RE = /\b(dry ?fruits?|nuts|baklava|necklaces?|jewell?er[yi]e?s?|rings?|bracelets?|earrings?|pendants?|watch(es)?|chocolates?|truffles?|pralines?|candles?|soaps?|perfumes?|fragrances?|cosmetics?|skincare|lipsticks?|creams?|serums?|macarons?|cookies?|biscuits?|cupcakes?|donuts?|cakes?|teas?|coffee|mugs?|pens?|cufflinks?|scarf|scarves|wine|whisk(e)?y|honey|dates|sweets?|mithai)\b/i;
   const productWord = (customerWords.match(PRODUCT_INSIDE_RE) ?? desc.match(PRODUCT_INSIDE_RE))?.[0]?.toLowerCase() ?? '';
-  const lifestyle = Boolean(productWord) && specialShape && !ref && !revision && !sheetMode && !openRequested && engine === 'klein' && process.env.ALEX_LIFESTYLE !== '0';
+  const isMoon = /^(moon|crescent)$/.test(shapeWord ?? '');
+  const lifestyle = (Boolean(productWord) || isMoon) && specialShape && !ref && !revision && !sheetMode && !openRequested && engine === 'klein' && process.env.ALEX_LIFESTYLE !== '0';
   const PRODUCT_PHRASES: [RegExp, string][] = [
     [/necklace|pendant/, 'a delicate gold necklace with a small pendant'], [/jewel/, 'a few pieces of fine gold jewellery'], [/ring/, 'a gold ring with a small stone'], [/bracelet/, 'a slim gold bracelet'], [/earring/, 'a pair of gold earrings'], [/watch/, 'an elegant wristwatch'],
     [/chocolate|truffle|praline/, 'an assortment of artisan chocolates in paper cups'], [/macaron/, 'a row of pastel macarons'], [/cookie|biscuit/, 'decorated cookies'], [/cupcake|cake|donut/, 'a small decorated cake'], [/dates|dry ?fruit|nuts|baklava/, 'neat rows of premium dates and dried fruit in small paper cups'], [/sweet|mithai/, 'premium sweets'],
     [/candle/, 'a scented candle in a glass jar'], [/soap/, 'a bar of handmade soap'], [/perfume|fragrance/, 'a perfume bottle'], [/cosmetic|skincare|cream|serum|lipstick/, 'a few cosmetic products'],
   ];
-  const productPhrase = PRODUCT_PHRASES.find(([re]) => re.test(productWord))?.[1] ?? `the ${productWord}`;
+  const productPhrase = PRODUCT_PHRASES.find(([re]) => re.test(productWord))?.[1] ?? (isMoon ? 'neat rows of assorted chocolates, dates and dried fruit in small cups' : `the ${productWord}`);
   const SCENES: [RegExp, string, string][] = [
     [/dates|dry ?fruit|nuts|baklava|mithai/, 'warm wooden table', 'a small lantern and a lit candle blurred in the background'],
     [/necklace|jewel|ring|bracelet|earring|pendant|watch/, 'white marble table', "a few pale pink roses and baby's breath blurred in the background"],
     [/chocolate|truffle|praline|macaron|cookie|biscuit|cupcake|donut|cake|sweet|mithai|dates|honey/, 'warm light-oak wooden table', 'a cup of coffee and a linen napkin blurred in the background'],
     [/candle|soap|perfume|fragrance|cosmetic|skincare|lipstick|cream|serum/, 'white marble table', 'eucalyptus sprigs and soft linen blurred in the background'],
   ];
-  const scene = SCENES.find(([re]) => re.test(productWord)) ?? [/./, 'light wooden table', 'soft greenery blurred in the background'];
+  const scene = SCENES.find(([re]) => re.test(productWord)) ?? (isMoon ? [/./, 'warm wooden table', 'a small lantern and a lit candle blurred in the background'] : [/./, 'light wooden table', 'soft greenery blurred in the background']);
   const lifeBrand = expectedText.length ? `its top face showing the name ${expectedText.join(' and ')} in elegant gold foil lettering, printed once and nothing else` : 'its top face plain and unprinted';
   const lifeShape = shapeHint ? `${shapeWord}-shaped (${shapeHint.replace(/, lying flat on the table and seen from a high angle.*$/, '')})` : `${shapeWord}-shaped`;
   const lifePrompt = `A luxury ${lifeShape} rigid gift box (${desc.replace(/[“”"]/g, '')}), open on a ${scene[1]}: the ${shapeWord}-shaped base tray lies in front, its walls following the ${shapeWord} outline, with a soft matching insert holding ${productPhrase}; the matching lid, itself exactly the same ${shapeWord} outline as the base, rests beside it slightly tilted, ${lifeBrand}. Exactly one gift box in the whole image: its base tray and its matching lid, and nothing else that looks like a box, case or second container. Soft natural window light, ${scene[2]}, shallow depth of field, premium product photography, photorealistic.`;
+  const lifeColour = (customerWords.match(/\b(navy( blue)?|black|white|gold(en)?|silver|red|burgundy|maroon|pink|blush|green|cream|ivory|kraft|brown|teal|grey|gray|purple|blue)\b/i) ?? desc.match(/\b(navy( blue)?|black|white|gold(en)?|silver|red|burgundy|maroon|pink|blush|green|cream|ivory|kraft|brown|teal|grey|gray|purple|blue)\b/i))?.[0]?.toLowerCase() ?? 'navy blue and gold';
+  const moonPrompt = `A crescent moon shaped rigid gift box, Ramadan Eid style, on a ${scene[1]}: a ${lifeColour} crescent-shaped tray filled with ${productPhrase}, and the matching crescent-shaped lid tilted open beside it${expectedText.length ? `, the brand name ${expectedText.join(' and ')} printed in gold on the lid` : ''}. One crescent box only. Warm cozy lighting, ${scene[2]}, photorealistic product photo.`;
+  const lifePromptFinal = isMoon ? moonPrompt : lifePrompt;
   if (lifestyle) { openRequested = true; alog(`lifestyle scene: ${shapeWord} box with ${productPhrase}`); }
   const wantsOpen = !ref && engine === 'klein' && openRequested && !lifestyle;
   if (!openRequested && !ref && !revision && !sheetMode) prompt = `${prompt.replace(/\b(for|holding|containing|with) (a |an |the )?(candle|candles|chocolate|chocolates|perfume|bottle|bottles|cosmetics?|soap|jewell?ery)s?\b/gi, '')} The box is completely closed: the lid is fully seated on the base so only a thin seam line shows where they meet, every flap tucked in, nothing lifted or ajar, nothing visible inside.`;
@@ -1432,12 +1436,21 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     }
   }
 
+  // ── 2c. plain standard box: prefer a real library photo over an AI render (owner: standard boxes should come from the library).
+  if (!specialShape && !revision && !ref && !sheetMode && expectedText.length === 0 && process.env.ALEX_LIB_FIRST !== '0') {
+    try {
+      const libQuery = `${desc} ${customerWords}`.replace(/\s+/g, ' ').trim();
+      const libRes = await sendPhoto(deps, conversationId, libQuery, wmText);
+      if (!/^No photo/.test(libRes)) { alog('standard box: sent a library photo instead of generating'); return libRes; }
+      alog('standard box: no library photo, generating instead');
+    } catch (err) { alog(`library-first lookup failed: ${(err as Error).message}`); }
+  }
   // ── 3. generate
   let bytes: Buffer;
   let note = '';
   let lifestyleDone = false;
   if (lifestyle) {
-    const r = await renderChecked(withTrigger(lifePrompt), null, 3, lifePrompt);
+    const r = await renderChecked(withTrigger(lifePromptFinal), null, 4, lifePromptFinal);
     bytes = r.bytes;
     lifestyleDone = true;
   } else if (ref) {
