@@ -577,7 +577,10 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
         `"lids": number of lids visible (one detached lid beside one base = 1 lid, 1 box).\n` +
         `"lid_state": one of "closed_flush" (lid on, fits the base, no gap; a closed mailer/tuck box with its front tab tucked in also counts), "closed_shoulder" (lid fully seated on a base that shows a rim/neck/shoulder below the lid — a normal closed shoulder box), "closed_ajar" (lid on but partly open/tilted or a flap open), "off_resting" (lid removed and resting on the table or leaning on the box, top face up), "floating" (lid in mid-air / not touching anything), "flat_sheet" (the lid is a flat panel with no side walls), "none".\n` +
         `"defects": short note on impossible geometry, duplicated parts, or none.\n` +
+        `"text_places": number of separate places the brand text appears on the box (0 if none).\n` +
+        `"lid_aligned": true/false — a closed lid sits squarely on its base with the same outline lined up; a lid that is rotated, shifted sideways, twisted or overhanging on one side = false (true when the box is open or has no separate lid).\n` +
         (/^(moon|crescent)$/i.test(shapeWord ?? '') ? `"concave_gap": true/false — the box outline (its outer walls, not a design on the lid) has a large inward-curving bite out of one side, leaving a C shape with two pointed tips; a D shape, half-circle, full circle or square box = false.\n` : '') +
+        (shapeWord ? `"base_matches_lid": true/false — the base tray under the lid has the same ${shapeWord} outline as the lid, with side walls following that outline; a rectangular, square or round base under a ${shapeWord} lid, or a base that sticks out past the lid with straight edges, = false.\n` : '') +
         (shapeWord ? `"shape_count": a number, counted on the outer walls of the box base (a design on the lid does not count) — for a star: how many pointed tips the box outline has; for a crescent/moon: how many pointed horns it has (a half-circle or D shape has 0); for a polygon: how many straight sides the box base has; for a heart: 1 if it has the heart notch and point, else 0; otherwise 0.\n` : '') +
         `Ignore the website watermark at the bottom.` },
     ] as unknown as string },
@@ -596,6 +599,9 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
   if (j.silhouette_ok === false) problems.push('wrong box shape');
   const SHAPE_COUNT: Record<string, [number, number, string]> = { star: [5, 6, 'five pointed tips'], moon: [2, 2, 'two pointed horns and a concave inner curve'], crescent: [2, 2, 'two pointed horns and a concave inner curve'], triangle: [3, 3, 'three straight sides'], triangular: [3, 3, 'three straight sides'], hexagon: [6, 6, 'six straight sides'], hexagonal: [6, 6, 'six straight sides'], octagon: [8, 8, 'eight straight sides'], octagonal: [8, 8, 'eight straight sides'], heart: [1, 1, 'a heart outline with the top notch and bottom point'] };
   const want = shapeWord ? SHAPE_COUNT[shapeWord.toLowerCase()] : undefined;
+  if (expectedText.length && Number(j.text_places ?? 1) > 1) problems.push(`the brand name must appear exactly once, on the lid top only`);
+  if (!openRequested && j.lid_aligned === false) problems.push('the lid must sit squarely on the base, lined up with it');
+  if (shapeWord && j.base_matches_lid === false && !problems.includes('wrong box shape')) problems.push(`the base tray must have the same ${shapeWord} outline as the lid, with no rectangular base underneath`);
   if (/^(moon|crescent)$/i.test(shapeWord ?? '') && j.concave_gap === false && !problems.includes('wrong box shape')) problems.push('the box itself must be a C-shaped crescent with a deep concave inner curve and two pointed horns');
   if (want && j.shape_count !== undefined && j.shape_count !== null && !Number.isNaN(Number(j.shape_count)) && (Number(j.shape_count) < want[0] || Number(j.shape_count) > want[1]) && !problems.includes('wrong box shape')) problems.push(`the box outline must be a ${shapeWord} with ${want[2]}`);
   if (j.colour_ok === false) problems.push('wrong colour');
@@ -933,6 +939,11 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     await postMessage(deps, { conversationId, senderType: 'BOT', body: wait }).catch(() => undefined);
   }
   const engine = (process.env.ALEX_IMAGE_ENGINE || 'klein').toLowerCase() === 'qwen' ? 'qwen' : 'klein';
+  // Cloudflare Workers AI (FLUX-1 schnell) for text-to-image: far better at special shapes than local Klein, and alive even when ComfyUI is down.
+  // The pod (Klein i2i, Qwen, the 35B brain + vision QA) stays; Cloudflare only replaces the first/text-to-image render.
+  const cfAccount = process.env.ALEX_CF_ACCOUNT || '';
+  const cfToken = process.env.ALEX_CF_TOKEN || '';
+  const cfEnabled = (process.env.ALEX_IMAGE_ENGINE || '').toLowerCase() === 'cloudflare' && Boolean(cfAccount && cfToken);
   // Presentation sheet (closed box + open view with the product + side views in one image): Qwen engine, no customer reference image.
   const sheetMode = engine === 'qwen' && !ref && (process.env.ALEX_MOCKUP_STYLE || 'sheet') !== 'single';
   const custRecent = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-3).map((l) => l.replace(/^Customer:\s*/, '')).join(' ');
@@ -960,7 +971,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const SIDES: Record<string, string> = { triangle: 'three', triangular: 'three', pentagon: 'five', hexagon: 'six', hexagonal: 'six', octagon: 'eight', octagonal: 'eight', diamond: 'four' };
   const sidesWord = shapeWord ? SIDES[shapeWord] : undefined;
   // Klein draws a flat crescent as a D shape from a low 3/4 angle; told to look down on it, it draws both horns every time.
-  const MOON_HINT = 'a crescent moon, a thick C-shaped crescent with two sharp pointed horns and a deep concave inner curve, like the moon symbol, lying flat on the table and seen from a high angle so the whole crescent outline with both horns is clearly visible';
+  const MOON_HINT = 'a slim crescent moon like the Eid crescent symbol: a thin elegant crescent with two long sharp pointed horns and a deeply concave inner curve, narrow in the middle, lying flat on the table and seen from a high angle so the whole crescent outline with both horns is clearly visible';
   const SHAPE_HINT: Record<string, string> = { star: 'a regular five-pointed star with five sharp pointed tips, one tip pointing away from the camera', moon: MOON_HINT, crescent: MOON_HINT, pillow: 'a pillow box with two curved ends', oval: 'an elongated oval' };
   const shapeHint = shapeWord ? SHAPE_HINT[shapeWord] : undefined;
   const flatLid = /^(triangle|triangular|hexagon|hexagonal|octagon|octagonal|star|diamond)$/.test(shapeWord ?? '') ? ' with a flat lid of the same outline, lying flat on the table like a shallow cake box' : '';
@@ -972,7 +983,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   } else if (specialShape) {
     prompt = openEarly
       ? `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}${flatLid}, with a ${shapeWord}-shaped lid that has its own side walls (a shallow ${shapeWord} tray, not a flat sheet) and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`
-      : `A single closed ${shapeWord}-shaped rigid gift box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}${flatLid}, lid on and seated, seen as one solid closed shape; the whole silhouette is a ${shapeWord}. ${prompt}`;
+      : `A single closed ${shapeWord}-shaped rigid gift box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}${flatLid}, lid on and seated, seen as one solid closed shape; the whole silhouette is a ${shapeWord}. The base tray under the lid has exactly the same ${shapeWord} outline as the lid, its side walls follow that ${shapeWord} outline all the way round, nothing rectangular underneath. ${prompt}`;
   }
   // The style LoRA was trained on rectangular boxes and pulls unusual silhouettes back to rectangles.
   const qwenSteps = sheetMode || Number(process.env.ALEX_QWEN_STEPS || 4) === 8 ? 8 : 4;
@@ -988,8 +999,30 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   let expectedText = [...prompt.replace(/[“”]/g, '"').matchAll(/"([^"]{2,40})"/g)].map((m) => m[1]).filter((t) => !/^(pbxbox|studio)/i.test(t));
   const customerWords = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-4).join(' ');
   // Klein needs the two-stage trick for open views; Qwen-Image renders them directly.
-  const openRequested = OPEN_RE.test(customerWords);
-  const wantsOpen = !ref && engine === 'klein' && openRequested;
+  let openRequested = OPEN_RE.test(customerWords);
+  // ── lifestyle scene (owner's reference: open heart box, necklace inside, lid beside with the name, marble + roses):
+  // a special-shape box whose contents the customer named is shown open with the product, on a styled table, in one Klein render.
+  const PRODUCT_INSIDE_RE = /\b(dry ?fruits?|nuts|baklava|necklaces?|jewell?er[yi]e?s?|rings?|bracelets?|earrings?|pendants?|watch(es)?|chocolates?|truffles?|pralines?|candles?|soaps?|perfumes?|fragrances?|cosmetics?|skincare|lipsticks?|creams?|serums?|macarons?|cookies?|biscuits?|cupcakes?|donuts?|cakes?|teas?|coffee|mugs?|pens?|cufflinks?|scarf|scarves|wine|whisk(e)?y|honey|dates|sweets?|mithai)\b/i;
+  const productWord = (customerWords.match(PRODUCT_INSIDE_RE) ?? desc.match(PRODUCT_INSIDE_RE))?.[0]?.toLowerCase() ?? '';
+  const lifestyle = Boolean(productWord) && specialShape && !ref && !revision && !sheetMode && !openRequested && engine === 'klein' && process.env.ALEX_LIFESTYLE !== '0';
+  const PRODUCT_PHRASES: [RegExp, string][] = [
+    [/necklace|pendant/, 'a delicate gold necklace with a small pendant'], [/jewel/, 'a few pieces of fine gold jewellery'], [/ring/, 'a gold ring with a small stone'], [/bracelet/, 'a slim gold bracelet'], [/earring/, 'a pair of gold earrings'], [/watch/, 'an elegant wristwatch'],
+    [/chocolate|truffle|praline/, 'an assortment of artisan chocolates in paper cups'], [/macaron/, 'a row of pastel macarons'], [/cookie|biscuit/, 'decorated cookies'], [/cupcake|cake|donut/, 'a small decorated cake'], [/dates|dry ?fruit|nuts|baklava/, 'neat rows of premium dates and dried fruit in small paper cups'], [/sweet|mithai/, 'premium sweets'],
+    [/candle/, 'a scented candle in a glass jar'], [/soap/, 'a bar of handmade soap'], [/perfume|fragrance/, 'a perfume bottle'], [/cosmetic|skincare|cream|serum|lipstick/, 'a few cosmetic products'],
+  ];
+  const productPhrase = PRODUCT_PHRASES.find(([re]) => re.test(productWord))?.[1] ?? `the ${productWord}`;
+  const SCENES: [RegExp, string, string][] = [
+    [/dates|dry ?fruit|nuts|baklava|mithai/, 'warm wooden table', 'a small lantern and a lit candle blurred in the background'],
+    [/necklace|jewel|ring|bracelet|earring|pendant|watch/, 'white marble table', "a few pale pink roses and baby's breath blurred in the background"],
+    [/chocolate|truffle|praline|macaron|cookie|biscuit|cupcake|donut|cake|sweet|mithai|dates|honey/, 'warm light-oak wooden table', 'a cup of coffee and a linen napkin blurred in the background'],
+    [/candle|soap|perfume|fragrance|cosmetic|skincare|lipstick|cream|serum/, 'white marble table', 'eucalyptus sprigs and soft linen blurred in the background'],
+  ];
+  const scene = SCENES.find(([re]) => re.test(productWord)) ?? [/./, 'light wooden table', 'soft greenery blurred in the background'];
+  const lifeBrand = expectedText.length ? `its top face showing the name ${expectedText.join(' and ')} in elegant gold foil lettering, printed once and nothing else` : 'its top face plain and unprinted';
+  const lifeShape = shapeHint ? `${shapeWord}-shaped (${shapeHint.replace(/, lying flat on the table and seen from a high angle.*$/, '')})` : `${shapeWord}-shaped`;
+  const lifePrompt = `A luxury ${lifeShape} rigid gift box (${desc.replace(/[“”"]/g, '')}), open on a ${scene[1]}: the ${shapeWord}-shaped base tray lies in front, its walls following the ${shapeWord} outline, with a soft matching insert holding ${productPhrase}; the matching lid, itself exactly the same ${shapeWord} outline as the base, rests beside it slightly tilted, ${lifeBrand}. Exactly one gift box in the whole image: its base tray and its matching lid, and nothing else that looks like a box, case or second container. Soft natural window light, ${scene[2]}, shallow depth of field, premium product photography, photorealistic.`;
+  if (lifestyle) { openRequested = true; alog(`lifestyle scene: ${shapeWord} box with ${productPhrase}`); }
+  const wantsOpen = !ref && engine === 'klein' && openRequested && !lifestyle;
   if (!openRequested && !ref && !revision && !sheetMode) prompt = `${prompt.replace(/\b(for|holding|containing|with) (a |an |the )?(candle|candles|chocolate|chocolates|perfume|bottle|bottles|cosmetics?|soap|jewell?ery)s?\b/gi, '')} The box is completely closed: the lid is fully seated on the base so only a thin seam line shows where they meet, every flap tucked in, nothing lifted or ajar, nothing visible inside.`;
   {
     const d = sizePartsFrom(customerWords) ?? sizePartsFrom(desc);
@@ -1036,15 +1069,26 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   let finalSeed = 0;
   let qwenFallback = false; // Klein could not spell the brand text: render the final attempt with Qwen-Image
   // Klein 4B flattens polygon boxes into squares or pyramids at any LoRA strength and gives stars 6-7 tips; Qwen-Image draws them right first time.
-  if (engine === 'klein' && specialShape && /^(triangle|triangular|hexagon|hexagonal|octagon|octagonal|pentagon|diamond|star)$/.test(shapeWord ?? '')) {
+  if (!cfEnabled && engine === 'klein' && specialShape && /^(triangle|triangular|hexagon|hexagonal|octagon|octagonal|pentagon|diamond|star)$/.test(shapeWord ?? '')) {
     qwenFallback = true;
     alog(`polygon shape "${shapeWord}": rendering with Qwen-Image instead of Klein`);
   }
+  const cfRender = async (text: string): Promise<Buffer> => {
+    const url = `https://api.cloudflare.com/client/v4/accounts/${cfAccount}/ai/run/@cf/black-forest-labs/flux-1-schnell`;
+    const res = await fetch(url, { method: 'POST', headers: { authorization: `Bearer ${cfToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: text.slice(0, 2000), steps: 8 }), signal: AbortSignal.timeout(90_000) });
+    if (!res.ok) throw new Error(`Cloudflare ${res.status} ${(await res.text()).slice(0, 120)}`);
+    const j = (await res.json()) as { result?: { image?: string } };
+    const b64 = j.result?.image;
+    if (!b64) throw new Error('Cloudflare: no image in response');
+    // schnell returns a 1024x1024 JPEG; re-encode to PNG so the rest of the pipeline (sharp, QA) is unchanged.
+    return await sharp(Buffer.from(b64, 'base64'), { failOn: 'none' }).png().toBuffer();
+  };
   const renderOnce = async (textIn: string, refImg: { name: string; w: number; h: number } | null, seedIn?: number, dims?: { w: number; h: number }): Promise<Buffer> => {
     // Quote marks around a brand name get printed on the box by every engine: pass the name bare, and drop
     // any "in double quotes" wording the enhancer copied from its own instructions (Qwen printed the quotes).
     let text = textIn.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'")
       .replace(/,?\s*(written |set |shown |displayed |enclosed |wrapped )?(in|with|inside|within|between|surrounded by) (double |single |curly |straight )?(quotes|quotation marks|inverted commas|quote marks)/gi, '');
+    if (cfEnabled && !refImg) return await cfRender(text);
     const prefix = `alex-${Math.random().toString(16).slice(2, 10)}`;
     const seed = seedIn ?? Math.floor(Math.random() * 999_999_999) + 1;
     lastSeed = seed;
@@ -1388,7 +1432,12 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   // ── 3. generate
   let bytes: Buffer;
   let note = '';
-  if (ref) {
+  let lifestyleDone = false;
+  if (lifestyle) {
+    const r = await renderChecked(withTrigger(lifePrompt), null, 3, lifePrompt);
+    bytes = r.bytes;
+    lifestyleDone = true;
+  } else if (ref) {
     const refImg = await uploadRef(ref.data, ref.mime);
     bytes = (await renderChecked(withTrigger(prompt), refImg, 2)).bytes;
   } else if (wantsOpen) {
@@ -1414,7 +1463,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     } else {
       // Klein draws a branded crescent as a D shape or a box, while the plain crescent is reliable: render it plain first,
       // then add the name by image-to-image (the shape survives that edit).
-      const twoStage = specialShape && /^(moon|crescent)$/.test(shapeWord ?? '') && expectedText.length > 0 && engine === 'klein' && !qwenFallback && !sheetMode;
+      const twoStage = !cfEnabled && specialShape && /^(moon|crescent|heart)$/.test(shapeWord ?? '') && expectedText.length > 0 && engine === 'klein' && !qwenFallback && !sheetMode;
       let r: { bytes: Buffer; ok: boolean } = { bytes: Buffer.alloc(0), ok: false };
       if (twoStage) {
         const want = expectedText;
@@ -1425,7 +1474,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
         alog(`two-stage ${shapeWord}: plain box ${s1.ok ? 'ok' : 'best effort'}, now adding the brand text`);
         const plainRef = await uploadRef(s1.bytes, 'image/png');
         const brandSentence = (prompt.match(/[^.]*\b(logo|brand name|wordmark|reading)\b[^.]*\./i) ?? [''])[0].trim();
-        if (plainRef) r = await renderChecked(`Same packaging as in the reference image, identical ${shapeWord} shape, colour, finish, camera angle and background. Now the brand name ${want.join(' and ')} is printed once, centered on the lid top, as the only printing on the box. ${brandSentence}`, plainRef, 2, prompt);
+        if (plainRef) r = await renderChecked(`Same packaging as in the reference image, identical ${shapeWord} shape, colour, finish, camera angle and background. Keep the lid exactly where it is, seated squarely on the base. Now the brand name ${want.join(' and ')} is printed exactly once, centered on the lid top; the side walls and the base stay completely blank. ${brandSentence}`, plainRef, 2, prompt);
         if (r.bytes.length === 0) r = s1;
       } else if (shapeRef) {
         r = await renderChecked(`Use the reference image only for the box SHAPE (a closed ${shapeWord}-shaped box, lid seated) and proportions; new colours, finish and logo exactly as described: ${prompt}`, shapeRef, 2);
@@ -1442,7 +1491,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   }
 
   // ── 4. size lines (sheet or single text render), watermark, store, post
-  if ((sheetMode || !ref) && !presentationDone) {
+  if ((sheetMode || !ref) && !presentationDone && !lifestyleDone) {
     const allCustomer = convoText.split('\n').filter((l) => l.startsWith('Customer:')).join(' ');
     const dims = sizePartsFrom(customerWords) ?? sizePartsFrom(desc) ?? sizePartsFrom(allCustomer);
     if (dims) {
@@ -1485,7 +1534,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   }
   return ref
     ? `Mockup sent to the customer, built on the image they shared (their own box/design). Reply in at most 15 words: one short line that this is the mockup from their design, then one short question.${note}`
-    : `${sheetMode || presentationDone ? 'Mockup presentation sheet sent to the customer (main photo, size specs, open view, dimensions and front view). ' : 'Mockup image sent to the customer. '}Reply in at most 15 words: one short line that this is their mockup, then one short question (changes, or the next missing detail such as quantity).${expectedText.length ? ` The brand text "${expectedText.join(', ')}" is already on it; never ask whether to add it.` : ''} No adjectives, no disclaimers.${note}`;
+    : `${sheetMode || presentationDone ? 'Mockup presentation sheet sent to the customer (main photo, size specs, open view, dimensions and front view). ' : lifestyleDone ? `Mockup sent to the customer: the open ${shapeWord} box with ${productPhrase} inside and the lid beside it. ` : 'Mockup image sent to the customer. '}Reply in at most 15 words: one short line that this is their mockup, then one short question (changes, or the next missing detail such as quantity).${expectedText.length ? ` The brand text "${expectedText.join(', ')}" is already on it; never ask whether to add it.` : ''} No adjectives, no disclaimers.${note}`;
 }
 
 async function handover(deps: AppDeps, conversationId: string, reason: string, summary: string): Promise<string> {
@@ -1906,13 +1955,13 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
             const hadPhoto = convo.some((m) => m.role === 'assistant' && typeof (m as { content: unknown }).content === 'string' && /photo was sent to the customer here:/.test((m as { content: string }).content));
             const PRODUCT_RE = /\b(box|boxes|mailer|mailers|pouch|pouches|sleeve|sleeves|label|labels|bag|bags|carton|cartons|tube|tubes|tray|trays|insert|inserts|packaging|display)\b/i;
             const shortLu = lu.trim().split(/\s+/).length <= 10;
-            const claimsPhoto = /\b(here is|here's|here are|attached|sending|i've sent|i have sent|sent you|i('ll| will| can|'m going to| am going to) (send|share|get|show|grab|pull up)|let me (send|share|get|show|grab|pull up)|i am sending)\b[^.!?]*\b(photo|picture|image|pic|sample|example|option)s?\b/i.test(out.content ?? '')
+            const claimsPhoto = /\b(here is|here's|here are|attached|sending|i've sent|i have sent|sent you|i('ll| will| can|'m going to| am going to) (send|share|get|show|grab|pull up)|let me (send|share|get|show|grab|pull up)|i am sending)\b[^.!?]*\b(photo|picture|image|pic|sample|example|option|box|boxes|mailer|pouch|bag|carton|label|sleeve|tube|tray|packaging|mock-?up)s?\b/i.test(out.content ?? '')
               // Roman Urdu promise: "photo bhejta hoon", "tasveer dikhata hoon", "bhej raha hoon"
               || (/\b(photo|picture|image|pic|tasveer|tasvir|sample)s?\b/i.test(out.content ?? '') && /\b(bhejt[ai]|bhej (raha|rahi)|dikhat[ai]|dikha (raha|rahi)|send kart[ai]|send kar (raha|rahi))\b/i.test(out.content ?? ''));
             const complaint = /\b(you (are|were|said|sent|keep|gave|just)|asked for|i asked|i said|not what|wrong|didn'?t|don'?t|why|instead of)\b/i.test(lu);
             const physicalSample = /\b(physical|real|actual|hard|printed|free) samples?\b|\bsamples? (to|at) my\b|\b(ship|mail|post|courier|deliver) (me )?(a |some |the )?samples?\b|\bsend (me )?(a |some |the )?samples? (to|at|by|home)\b/i.test(lu);
             const morePhotos = hadPhoto && shortLu && /\b(more|another|other|next|different|else|again)\b/i.test(lu);
-            const wantsPhoto = !complaint && !physicalSample && (morePhotos || (/\b(photo|picture|pic|image|example|sample|tasveer|tasvir)s?\b/i.test(lu) && (/\b(show|see|have|send|share|look|of|bhej\w*|dikha\w*|dekh\w*|chahiye|chaiye|chahye|do|dein|den|hai|ha|ki|ka)\b/i.test(lu) || hadPhoto))
+            const wantsPhoto = !complaint && !physicalSample && (morePhotos || (/\b(photo|picture|pic|image|example|sample|tasveer|tasvir)s?\b/i.test(lu) && (/\b(show|see|have|send|share|look|of|please|plz|pls|bhej\w*|dikha\w*|dekh\w*|chahiye|chaiye|chahye|do|dein|den|hai|ha|ki|ka)\b/i.test(lu) || /\?\s*$/.test(lu.trim()) || hadPhoto))
               || /\bshow me\b|\b(can|could|may) (i|we) (see|have a look|take a look)\b|\blet me see\b|\bi('d| would) (like|love) to see\b/i.test(lu)
               || (hadPhoto && shortLu && PRODUCT_RE.test(lu) && !wantsMockup)
               || claimsPhoto);
