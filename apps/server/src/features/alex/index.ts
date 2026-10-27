@@ -905,6 +905,8 @@ const PHOTO_WAIT_MSGS = [
 const photoFallback = new Set<string>();
 /** Conversations whose picture tool failed this turn: the reply must not pretend a picture was sent. */
 const pictureFailed = new Set<string>();
+// When Cloudflare's daily free neurons run out, stop sending it there until the next 00:00 UTC reset and use the full local path instead.
+let cfExhaustedUntil = 0;
 const MOCKUP_WAIT_MSGS = [
   'Sure, creating your mockup now, it can take a minute or two.',
   'On it, your mockup is being generated, give me a moment.',
@@ -944,6 +946,8 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const cfAccount = process.env.ALEX_CF_ACCOUNT || '';
   const cfToken = process.env.ALEX_CF_TOKEN || '';
   const cfEnabled = (process.env.ALEX_IMAGE_ENGINE || '').toLowerCase() === 'cloudflare' && Boolean(cfAccount && cfToken);
+  // cfHealthy is false while the daily free quota is spent, so the special-shape flow uses the GOOD local path (two-stage, Qwen polygons) instead of a weak one-shot Klein render.
+  const cfHealthy = cfEnabled && Date.now() > cfExhaustedUntil;
   // Presentation sheet (closed box + open view with the product + side views in one image): Qwen engine, no customer reference image.
   const sheetMode = engine === 'qwen' && !ref && (process.env.ALEX_MOCKUP_STYLE || 'sheet') !== 'single';
   const custRecent = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-3).map((l) => l.replace(/^Customer:\s*/, '')).join(' ');
@@ -1073,7 +1077,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   let finalSeed = 0;
   let qwenFallback = false; // Klein could not spell the brand text: render the final attempt with Qwen-Image
   // Klein 4B flattens polygon boxes into squares or pyramids at any LoRA strength and gives stars 6-7 tips; Qwen-Image draws them right first time.
-  if (!cfEnabled && engine === 'klein' && specialShape && /^(triangle|triangular|hexagon|hexagonal|octagon|octagonal|pentagon|diamond|star)$/.test(shapeWord ?? '')) {
+  if (!cfHealthy && engine === 'klein' && specialShape && /^(triangle|triangular|hexagon|hexagonal|octagon|octagonal|pentagon|diamond|star)$/.test(shapeWord ?? '')) {
     qwenFallback = true;
     alog(`polygon shape "${shapeWord}": rendering with Qwen-Image instead of Klein`);
   }
@@ -1092,9 +1096,18 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     // any "in double quotes" wording the enhancer copied from its own instructions (Qwen printed the quotes).
     let text = textIn.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'")
       .replace(/,?\s*(written |set |shown |displayed |enclosed |wrapped )?(in|with|inside|within|between|surrounded by) (double |single |curly |straight )?(quotes|quotation marks|inverted commas|quote marks)/gi, '');
-    if (cfEnabled && !refImg) {
+    if (cfHealthy && !refImg) {
       try { return await cfRender(text); }
-      catch (err) { alog(`Cloudflare render failed, falling back to the local engine: ${(err as Error).message}`); }
+      catch (err) {
+        const msg = (err as Error).message;
+        if (/429|daily free allocation|neurons/i.test(msg)) {
+          const reset = new Date(); reset.setUTCHours(24, 5, 0, 0);
+          cfExhaustedUntil = reset.getTime();
+          alog(`Cloudflare daily free quota spent; using the local engine until ${reset.toISOString()}`);
+        } else {
+          alog(`Cloudflare render failed, falling back to the local engine: ${msg}`);
+        }
+      }
     }
     const prefix = `alex-${Math.random().toString(16).slice(2, 10)}`;
     const seed = seedIn ?? Math.floor(Math.random() * 999_999_999) + 1;
@@ -1479,7 +1492,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     } else {
       // Klein draws a branded crescent as a D shape or a box, while the plain crescent is reliable: render it plain first,
       // then add the name by image-to-image (the shape survives that edit).
-      const twoStage = !cfEnabled && specialShape && /^(moon|crescent|heart)$/.test(shapeWord ?? '') && expectedText.length > 0 && engine === 'klein' && !qwenFallback && !sheetMode;
+      const twoStage = !cfHealthy && specialShape && /^(moon|crescent|heart)$/.test(shapeWord ?? '') && expectedText.length > 0 && engine === 'klein' && !qwenFallback && !sheetMode;
       let r: { bytes: Buffer; ok: boolean } = { bytes: Buffer.alloc(0), ok: false };
       if (twoStage) {
         const want = expectedText;
