@@ -1578,6 +1578,59 @@ async function handover(deps: AppDeps, conversationId: string, reason: string, s
   return 'The team has been notified with your summary. Tell the customer a team member will follow up shortly (in chat, or by email if they shared one) and keep helping meanwhile.';
 }
 
+/** Pull the lead fields the CRM wants out of the chat transcript (only what the customer actually said). */
+async function extractLead(deps: AppDeps, transcript: string): Promise<Record<string, unknown>> {
+  const out = await chat(deps, [
+    { role: 'system', content: 'Extract the customer details from this packaging sales chat. Reply with ONLY a JSON object, no prose. Keys: name, email, phone, product_name, quantity (integer), length, width, height (numbers), unit, stock, color, coating, message. Use the values the CUSTOMER actually gave; use null for anything not stated. "message" = one short line summarising what they want. Dimensions: map L x W x H to length/width/height and the unit (in/cm/mm).' },
+    { role: 'user', content: transcript.slice(0, 6000) },
+  ], false);
+  const raw = (out.content ?? '').replace(/```(?:json)?/gi, '').trim();
+  const m = raw.match(/\{[\s\S]*\}/);
+  try { return m ? JSON.parse(m[0]) as Record<string, unknown> : {}; } catch { return {}; }
+}
+
+const EMAIL_RE = /[\w.+-]+@[\w-]+\.[\w.-]+/;
+
+/** Push the chat as a new lead into the central CRM (tcbcrm). Non-blocking: a failure never affects the chat. */
+async function pushLeadToCrm(deps: AppDeps, conversationId: string, transcript: string, summary: string): Promise<void> {
+  const url = process.env.ALEX_CRM_URL || '';
+  const key = process.env.ALEX_CRM_KEY || '';
+  if (!url || !key) return;
+  try {
+    const fields = await extractLead(deps, transcript);
+    const email = String(fields.email ?? '').trim();
+    if (!EMAIL_RE.test(email)) { alog('CRM push skipped: no customer email'); return; }
+    const num = (v: unknown): number | undefined => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : undefined; };
+    const str = (v: unknown): string | undefined => { const t = String(v ?? '').trim(); return t && t.toLowerCase() !== 'null' ? t : undefined; };
+    const payload: Record<string, unknown> = {
+      external_lead_id: `livechat2-${conversationId}`,
+      source: 'premiumboxes-chat',
+      name: str(fields.name) ?? 'Website visitor',
+      email,
+      phone: str(fields.phone),
+      product_name: str(fields.product_name),
+      quantity: num(fields.quantity),
+      length: num(fields.length), width: num(fields.width), height: num(fields.height),
+      unit: str(fields.unit), stock: str(fields.stock), color: str(fields.color), coating: str(fields.coating),
+      subject: str(fields.product_name) ? `${str(fields.product_name)} — website chat` : 'Website chat inquiry',
+      message: (str(fields.message) ? str(fields.message) + '\n\n' : '') + '--- chat summary ---\n' + summary,
+      status: 'New',
+    };
+    Object.keys(payload).forEach((k) => payload[k] === undefined && delete payload[k]);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const body = await res.json().catch(() => ({})) as { lead_id?: number; created?: boolean; message?: string };
+    if (res.ok) alog(`CRM lead ${body.created === false ? 'already existed' : 'created'}: id ${body.lead_id} for ${email}`);
+    else alog(`CRM push failed: ${res.status} ${body.message ?? ''}`);
+  } catch (err) {
+    alog(`CRM push error: ${(err as Error).message}`);
+  }
+}
+
 const CONTACT_RE = /[\w.+-]+@[\w-]+\.[\w.-]+|\+?\d[\d\s().-]{8,}\d/;
 // A quantity in the customer's words ("500 boxes", "1,000 pcs", "2k", "quantity 300"), not a size like 10x8x4.
 const QTY_RE = /\b(\d{1,3}(,\d{3})+|\d{2,7})\s*(k\b|pcs|pieces|units|boxes|bags|pouches|labels|qty|quantity|per (month|order))|\b(quantity|qty|order of|need|want)\s*(is|:)?\s*(\d{1,3}(,\d{3})+|\d{2,7})\b(?!\s*[x×*])|\b\d+\s*(k|thousand|hundred)\b/i;
@@ -1601,7 +1654,9 @@ async function maybeAutoHandover(deps: AppDeps, conversationId: string, convo: C
       { role: 'system', content: `You write one-paragraph handover notes for a packaging sales team. The agent is named ${botName}; the customer's name is only known if they stated it (otherwise say "the customer"). Include: what they want (box type, size, quantity, material, finish, deadline), contact details given, and what was promised. Plain text, max 90 words.` },
       { role: 'user', content: `${transcript}\n${botName}: ${reply}` },
     ], false);
-    await handover(deps, conversationId, 'quote', out.content?.trim() || 'Customer needs a quote — see transcript.');
+    const summary = out.content?.trim() || 'Customer needs a quote — see transcript.';
+    await handover(deps, conversationId, 'quote', summary);
+    await pushLeadToCrm(deps, conversationId, transcript, summary);
   } catch (err) {
     alog(`auto handover failed: ${(err as Error).message}`);
   }
