@@ -597,7 +597,7 @@ async function checkRender(deps: AppDeps, png: Buffer, expectedText: string[], s
   const lid = String(j.lid_state ?? 'none');
   const problems: string[] = [];
   if (j.silhouette_ok === false) problems.push('wrong box shape');
-  const SHAPE_COUNT: Record<string, [number, number, string]> = { star: [5, 6, 'five pointed tips'], moon: [2, 2, 'two pointed horns and a concave inner curve'], crescent: [2, 2, 'two pointed horns and a concave inner curve'], triangle: [3, 3, 'three straight sides'], triangular: [3, 3, 'three straight sides'], hexagon: [6, 6, 'six straight sides'], hexagonal: [6, 6, 'six straight sides'], octagon: [8, 8, 'eight straight sides'], octagonal: [8, 8, 'eight straight sides'], heart: [1, 1, 'a heart outline with the top notch and bottom point'] };
+  const SHAPE_COUNT: Record<string, [number, number, string]> = { star: [5, 5, 'exactly five pointed tips'], moon: [2, 2, 'two pointed horns and a concave inner curve'], crescent: [2, 2, 'two pointed horns and a concave inner curve'], triangle: [3, 3, 'three straight sides'], triangular: [3, 3, 'three straight sides'], hexagon: [6, 6, 'six straight sides'], hexagonal: [6, 6, 'six straight sides'], octagon: [8, 8, 'eight straight sides'], octagonal: [8, 8, 'eight straight sides'], heart: [1, 1, 'a heart outline with the top notch and bottom point'] };
   const want = shapeWord ? SHAPE_COUNT[shapeWord.toLowerCase()] : undefined;
   if (expectedText.length && Number(j.text_places ?? 1) > 1) problems.push(`the brand name must appear exactly once, on the lid top only`);
   if (!openRequested && j.lid_aligned === false) problems.push('the lid must sit squarely on the base, lined up with it');
@@ -948,6 +948,10 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const cfEnabled = (process.env.ALEX_IMAGE_ENGINE || '').toLowerCase() === 'cloudflare' && Boolean(cfAccount && cfToken);
   // cfHealthy is false while the daily free quota is spent, so the special-shape flow uses the GOOD local path (two-stage, Qwen polygons) instead of a weak one-shot Klein render.
   const cfHealthy = cfEnabled && Date.now() > cfExhaustedUntil;
+  // Local FLUX.1 schnell on the pod: replaces Cloudflare, no quota, same FLUX quality. Enabled with ALEX_IMAGE_ENGINE=flux1.
+  const fluxLocal = (process.env.ALEX_IMAGE_ENGINE || '').toLowerCase() === 'flux1';
+  // A strong text-to-image engine (Cloudflare FLUX schnell, or local FLUX.1 schnell) is handling the first render: it gets shapes AND brand text right, so skip the two-stage trick and the polygon->Qwen routing.
+  const goodImg = cfHealthy || fluxLocal;
   // Presentation sheet (closed box + open view with the product + side views in one image): Qwen engine, no customer reference image.
   const sheetMode = engine === 'qwen' && !ref && (process.env.ALEX_MOCKUP_STYLE || 'sheet') !== 'single';
   const custRecent = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-3).map((l) => l.replace(/^Customer:\s*/, '')).join(' ');
@@ -976,18 +980,18 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   const sidesWord = shapeWord ? SIDES[shapeWord] : undefined;
   // Klein draws a flat crescent as a D shape from a low 3/4 angle; told to look down on it, it draws both horns every time.
   const MOON_HINT = 'a slim crescent moon like the Eid crescent symbol: a thin elegant crescent with two long sharp pointed horns and a deeply concave inner curve, narrow in the middle, lying flat on the table and seen from a high angle so the whole crescent outline with both horns is clearly visible';
-  const SHAPE_HINT: Record<string, string> = { star: 'a regular five-pointed star with five sharp pointed tips, one tip pointing away from the camera', moon: MOON_HINT, crescent: MOON_HINT, pillow: 'a pillow box with two curved ends', oval: 'an elongated oval' };
+  const SHAPE_HINT: Record<string, string> = { star: 'a regular five-pointed star with exactly five sharp pointed tips (a five-pointed star, NOT a six-pointed star, NOT an eight-pointed star), one tip pointing away from the camera', moon: MOON_HINT, crescent: MOON_HINT, pillow: 'a pillow box with two curved ends', oval: 'an elongated oval' };
   const shapeHint = shapeWord ? SHAPE_HINT[shapeWord] : undefined;
   const flatLid = /^(triangle|triangular|hexagon|hexagonal|octagon|octagonal|star|diamond)$/.test(shapeWord ?? '') ? ' with a flat lid of the same outline, lying flat on the table like a shallow cake box' : '';
   const OPEN_RE = /\b(open(ed)?|inside|insert|tray|lid (lifted|off|removed)|contents?|showing the)\b/i;
   const customerWordsEarly = convoText.split('\n').filter((l) => l.startsWith('Customer:')).slice(-4).join(' ');
   const openEarly = OPEN_RE.test(desc + ' ' + customerWordsEarly) && OPEN_RE.test(customerWordsEarly);
   if (specialShape && sheetMode) {
-    prompt = `All five photos show one and the same ${shapeWord}-shaped rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}${flatLid}: in the closed views, the open view and the three small views alike, the base and the lid are both ${shapeWord}-shaped and the whole silhouette is a ${shapeWord}; in the open view the ${shapeWord}-shaped lid is lifted off and rests beside the ${shapeWord}-shaped base, which is seen from above as a ${shapeWord}-shaped tray holding the product; there is no hinged lid and no rectangular or square box anywhere in the image. ${prompt}`;
+    prompt = `All five photos show one and the same ${shapeWord}-shaped rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides and exactly ${sidesWord} corners (a regular ${shapeWord} seen from above, not more sides and not fewer, not a circle)` : shapeHint ? ` (${shapeHint})` : ''}${flatLid}: in the closed views, the open view and the three small views alike, the base and the lid are both ${shapeWord}-shaped and the whole silhouette is a ${shapeWord}; in the open view the ${shapeWord}-shaped lid is lifted off and rests beside the ${shapeWord}-shaped base, which is seen from above as a ${shapeWord}-shaped tray holding the product; there is no hinged lid and no rectangular or square box anywhere in the image. ${prompt}`;
   } else if (specialShape) {
     prompt = openEarly
-      ? `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}${flatLid}, with a ${shapeWord}-shaped lid that has its own side walls (a shallow ${shapeWord} tray, not a flat sheet) and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`
-      : `A single closed ${shapeWord}-shaped rigid gift box${sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : shapeHint ? ` (${shapeHint})` : ''}${flatLid}, lid on and seated, seen as one solid closed shape; the whole silhouette is a ${shapeWord}. The base tray under the lid has exactly the same ${shapeWord} outline as the lid, its side walls follow that ${shapeWord} outline all the way round, nothing rectangular underneath. ${prompt}`;
+      ? `A ${shapeWord}-shaped two-piece rigid box${sidesWord ? ` with exactly ${sidesWord} equal straight sides and exactly ${sidesWord} corners (a regular ${shapeWord} seen from above, not more sides and not fewer, not a circle)` : shapeHint ? ` (${shapeHint})` : ''}${flatLid}, with a ${shapeWord}-shaped lid that has its own side walls (a shallow ${shapeWord} tray, not a flat sheet) and a matching ${shapeWord}-shaped base; the whole box silhouette is a ${shapeWord}. ${prompt}`
+      : `A single closed ${shapeWord}-shaped rigid gift box${sidesWord ? ` with exactly ${sidesWord} equal straight sides and exactly ${sidesWord} corners (a regular ${shapeWord} seen from above, not more sides and not fewer, not a circle)` : shapeHint ? ` (${shapeHint})` : ''}${flatLid}, lid on and seated, seen as one solid closed shape; the whole silhouette is a ${shapeWord}. The base tray under the lid has exactly the same ${shapeWord} outline as the lid, its side walls follow that ${shapeWord} outline all the way round, nothing rectangular underneath. ${prompt}`;
   }
   // The style LoRA was trained on rectangular boxes and pulls unusual silhouettes back to rectangles.
   const qwenSteps = sheetMode || Number(process.env.ALEX_QWEN_STEPS || 4) === 8 ? 8 : 4;
@@ -1077,10 +1081,25 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   let finalSeed = 0;
   let qwenFallback = false; // Klein could not spell the brand text: render the final attempt with Qwen-Image
   // Klein 4B flattens polygon boxes into squares or pyramids at any LoRA strength and gives stars 6-7 tips; Qwen-Image draws them right first time.
-  if (!cfHealthy && engine === 'klein' && specialShape && /^(triangle|triangular|hexagon|hexagonal|octagon|octagonal|pentagon|diamond|star)$/.test(shapeWord ?? '')) {
+  if (!goodImg && engine === 'klein' && specialShape && /^(triangle|triangular|hexagon|hexagonal|octagon|octagonal|pentagon|diamond|star)$/.test(shapeWord ?? '')) {
     qwenFallback = true;
     alog(`polygon shape "${shapeWord}": rendering with Qwen-Image instead of Klein`);
   }
+  const fluxRender = async (text: string, dims?: { w: number; h: number }): Promise<Buffer> => {
+    const prefix = `flux1-${Math.random().toString(16).slice(2, 10)}`;
+    const seed = Math.floor(Math.random() * 999_999_999) + 1;
+    const w = dims?.w ?? 1152, h = dims?.h ?? 896;
+    const wf: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
+      '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'flux1-schnell-fp8.safetensors' } },
+      '4': { class_type: 'CLIPTextEncode', inputs: { text, clip: ['1', 1] } },
+      '5': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
+      '6': { class_type: 'EmptySD3LatentImage', inputs: { width: w, height: h, batch_size: 1 } },
+      '8': { class_type: 'KSampler', inputs: { seed, steps: 4, cfg: 1.0, sampler_name: 'euler', scheduler: 'simple', denoise: 1.0, model: ['1', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0] } },
+      '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['1', 2] } },
+      '10': { class_type: 'SaveImage', inputs: { filename_prefix: prefix, images: ['9', 0] } },
+    };
+    return runComfy(base, wf, prefix);
+  };
   const cfRender = async (text: string): Promise<Buffer> => {
     const url = `https://api.cloudflare.com/client/v4/accounts/${cfAccount}/ai/run/@cf/black-forest-labs/flux-1-schnell`;
     const res = await fetch(url, { method: 'POST', headers: { authorization: `Bearer ${cfToken}`, 'content-type': 'application/json' }, body: JSON.stringify({ prompt: text.slice(0, 2000), steps: 8 }), signal: AbortSignal.timeout(90_000) });
@@ -1096,6 +1115,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     // any "in double quotes" wording the enhancer copied from its own instructions (Qwen printed the quotes).
     let text = textIn.replace(/[“”]/g, '"').replace(/"([^"]{2,40})"/g, '$1').replace(/[‘’]/g, "'")
       .replace(/,?\s*(written |set |shown |displayed |enclosed |wrapped )?(in|with|inside|within|between|surrounded by) (double |single |curly |straight )?(quotes|quotation marks|inverted commas|quote marks)/gi, '');
+    if (fluxLocal && !refImg) return await fluxRender(text, dims);
     if (cfHealthy && !refImg) {
       try { return await cfRender(text); }
       catch (err) {
@@ -1184,7 +1204,10 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     alog(`mockup QA ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
     const score = (why: string): number => (why === 'ok' ? 0 : why.split(';').length);
     let best = { bytes, ok: qa.ok, score: score(qa.why), seed: lastSeed };
-    for (let i = 2; !qa.ok && i <= attempts; i++) {
+    // Best-of-2 for polygons/stars: FLUX gives the exact side/point count only ~half the time, so always take a second draw and keep the cleaner one.
+    const polyStar = specialShape && !refImg && /^(star|triangle|triangular|hexagon|hexagonal|octagon|octagonal|diamond|pentagon)$/.test(shapeWord ?? '');
+    const minTries = polyStar ? 2 : 1;
+    for (let i = 2; (!qa.ok || i <= minTries) && i <= attempts; i++) {
       let fix = qa.why.replace(/^no:?\s*/i, '').trim();
       try {
         const pos = await chat(deps, [
@@ -1195,7 +1218,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
       } catch { /* keep raw note */ }
       // last attempt on Klein with a brand name: let Qwen-Image (strong at text) render it
       if (i === attempts && engine === 'klein' && expectedText.length && !refImg && /brand text/i.test(qa.why)) { qwenFallback = true; alog('brand text still wrong on Klein: final attempt with Qwen-Image'); }
-      bytes = await renderOnce(`${text}\nCorrection (the previous render was rejected): ${fix}`, refImg);
+      bytes = qa.ok ? await renderOnce(text, refImg) : await renderOnce(`${text}\nCorrection (the previous render was rejected): ${fix}`, refImg);
       qa = await verifyText(bytes, await checkRender(deps, bytes, expectedText, qaSummary ?? text, openRequested, sheetMode, specialShape ? shapeWord : undefined).catch(() => ({ ok: true, why: 'qa skipped' })));
       alog(`mockup QA attempt ${i} ${qa.ok ? 'ok' : 'FAILED: ' + qa.why}`);
       if (qa.ok || score(qa.why) < best.score) best = { bytes, ok: qa.ok, score: score(qa.why), seed: lastSeed };
@@ -1219,7 +1242,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     const product = (prompt.match(/showing (.+?) (?:inside|sitting|nestled|resting)/i)?.[1] ?? (productGuess ? `${productGuess}s` : 'the product')).trim().slice(0, 120);
     const scene = (mainSentence.match(/\s(?:standing|sitting|placed|resting|set|displayed|lying|positioned|shown)\s(?:on|against)\s(.+)$/i)?.[1] ?? prompt.match(/standing on (.+?)\./i)?.[1] ?? 'a dark wooden table with softly blurred warm decor behind').trim().slice(0, 200);
     alog(`panel repair product: ${product}; scene: ${scene.slice(0, 80)}`);
-    const sides = sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : '';
+    const sides = sidesWord ? ` with exactly ${sidesWord} equal straight sides and exactly ${sidesWord} corners (a regular ${shapeWord} seen from above, not more sides and not fewer, not a circle)` : '';
     const views = ['seen from a three-quarter angle', 'open', 'seen straight from the front', 'seen from a three-quarter angle', 'seen from directly above'];
     const okWords = SHAPE_SYNONYMS[shapeWord!.toLowerCase()] ?? [shapeWord!.toLowerCase()];
     let out = sheet;
@@ -1274,7 +1297,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     const productGuess = Object.keys(PHOTO_TYPES).find((k) => !['window', 'handle', 'heart', 'rigid', 'magnetic', 'tuck', 'sleeve', 'drawer', 'pillow', 'tube', 'hexagon', 'display', 'corrugated', 'shipping', 'mailer', 'gable', 'bag', 'pouch', 'label', 'sticker'].includes(k) && !PHOTO_SHAPE_KEYS.has(k) && new RegExp(`\\b${k}`, 'i').test(desc + ' ' + customerWords));
     const product = (prompt.match(/showing (.+?) (?:inside|sitting|nestled|resting)/i)?.[1] ?? (productGuess ? `${productGuess}s` : 'the product')).trim().slice(0, 120);
     const scene = (mainSentence.match(/\s(?:standing|sitting|placed|resting|set|displayed|lying|positioned|shown)\s(?:on|against)\s(.+)$/i)?.[1] ?? prompt.match(/standing on (.+?)\./i)?.[1] ?? 'a cream marble table with softly blurred gold decor behind').trim().slice(0, 200);
-    const sides = sidesWord ? ` with exactly ${sidesWord} equal straight sides (a regular ${shapeWord} seen from above)` : '';
+    const sides = sidesWord ? ` with exactly ${sidesWord} equal straight sides and exactly ${sidesWord} corners (a regular ${shapeWord} seen from above, not more sides and not fewer, not a circle)` : '';
     const okWords = SHAPE_SYNONYMS[shapeWord!.toLowerCase()] ?? [shapeWord!.toLowerCase()];
     alog(`composed sheet for ${shapeWord}: box=${boxDesc.slice(0, 100)} | product=${product} | scene=${scene.slice(0, 60)}`);
     // Qwen-Image renders negatives literally ("no hooks" produced hooks), so these prompts only say what IS there.
@@ -1492,7 +1515,7 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     } else {
       // Klein draws a branded crescent as a D shape or a box, while the plain crescent is reliable: render it plain first,
       // then add the name by image-to-image (the shape survives that edit).
-      const twoStage = !cfHealthy && specialShape && /^(moon|crescent|heart)$/.test(shapeWord ?? '') && expectedText.length > 0 && engine === 'klein' && !qwenFallback && !sheetMode;
+      const twoStage = !goodImg && specialShape && /^(moon|crescent|heart)$/.test(shapeWord ?? '') && expectedText.length > 0 && engine === 'klein' && !qwenFallback && !sheetMode;
       let r: { bytes: Buffer; ok: boolean } = { bytes: Buffer.alloc(0), ok: false };
       if (twoStage) {
         const want = expectedText;
