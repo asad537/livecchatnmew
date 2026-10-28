@@ -929,6 +929,28 @@ async function reviseMockupPrompt(deps: AppDeps, prevPrompt: string, change: str
   return null;
 }
 
+/** Best-matching REAL library product photo (bytes) to use as a render reference (i2i). */
+async function libraryRefBytes(deps: AppDeps, query: string, wmText: string): Promise<{ data: Buffer; mime: string } | null> {
+  const terms = query.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2).join(' ');
+  if (!terms) return null;
+  let rows: PhotoRow[] = [];
+  try {
+    rows = await deps.db.all<PhotoRow>(
+      `SELECT id, website, company_logo, original_name, mime, size, path, caption, tags FROM alex_photos
+         WHERE is_product = 1 AND MATCH(caption, tags) AGAINST (? IN NATURAL LANGUAGE MODE)
+         ORDER BY MATCH(caption, tags) AGAINST (? IN NATURAL LANGUAGE MODE) DESC LIMIT 8`,
+      [terms, terms],
+    );
+  } catch { return null; }
+  if (rows.length === 0) return null;
+  const q = query.toLowerCase();
+  const typeWords = Object.keys(PHOTO_TYPES).filter((k) => PHOTO_TYPES[k].some((syn) => new RegExp(`\\b${syn}(e?s)?\\b`, 'i').test(q)));
+  const matchesType = (r: PhotoRow): boolean => typeWords.some((k) => PHOTO_TYPES[k].some((syn) => new RegExp(`\\b${syn}(e?s)?\\b`, 'i').test(`${r.caption} ${r.tags ?? ''}`)));
+  const pick = typeWords.length ? rows.find(matchesType) : rows[0];
+  if (!pick?.path || !fs.existsSync(pick.path)) return null;
+  try { return { data: gunzipSync(fs.readFileSync(pick.path)), mime: pick.mime }; } catch { return null; }
+}
+
 async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: string, wmText: string, convoText: string, asPhoto = false): Promise<string> {
   const base = deps.config.alex.comfyUrl;
   if (!base) return 'Mockup generation is not available right now. Describe it in words instead.';
@@ -1504,6 +1526,14 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   }
   // A logo is brand TEXT only — never a literal drawing/photo of the product or any object printed on the box.
   if (!lifestyle) prompt += ' The only thing printed on the box is flat brand text or a simple typographic monogram; there is NO drawing, illustration, icon, emblem or photo of any product or object (no laptop, phone, bottle, cake, box, etc.) printed anywhere on the surfaces.';
+  // ── 2d. library reference: render the customer's custom box FROM a real library photo (i2i), so the look is realistic.
+  let libRef: { data: Buffer; mime: string } | null = null;
+  if (!ref && !specialShape && !revision && !lifestyle && !sheetMode && process.env.ALEX_LIB_REF !== '0') {
+    try {
+      libRef = await libraryRefBytes(deps, `${desc} ${customerWords}`.replace(/\s+/g, ' ').trim(), wmText);
+      if (libRef) alog('library reference: using a real product photo as the render reference (i2i)');
+    } catch (err) { alog(`library-ref lookup failed: ${(err as Error).message}`); }
+  }
   // ── 3. generate
   let bytes: Buffer;
   let note = '';
@@ -1515,6 +1545,14 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   } else if (ref) {
     const refImg = await uploadRef(ref.data, ref.mime);
     bytes = (await renderChecked(withTrigger(prompt), refImg, 2)).bytes;
+  } else if (libRef) {
+    const refImg = await uploadRef(libRef.data, libRef.mime);
+    if (refImg) {
+      const libPrompt = `Studio product photo of a box with the SAME style, shape, proportions, material and finish as the one in the reference image, re-printed with the customer's own design: ${desc}. Replace any logo, brand name or printed artwork from the reference with ONLY the customer's branding described above; keep the box geometry, lid and camera angle. Seamless light grey studio backdrop, 3/4 angle, soft studio light, photorealistic, no people, no hands, exactly one box.`;
+      bytes = (await renderChecked(libPrompt, refImg, 2, prompt)).bytes;
+    } else {
+      bytes = (await renderChecked(withTrigger(prompt), null, 3)).bytes;
+    }
   } else if (wantsOpen) {
     // Stage 1: the closed box (any silhouette renders far more reliably closed).
     const closedPrompt = prompt
