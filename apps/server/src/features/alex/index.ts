@@ -2074,13 +2074,18 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
         const PRODUCTISH = /\b(rigid|mailer|mailers|kraft|corrugated|bottle|bottles|beer|wine|whisky|whiskey|watch|watches|candle|candles|chocolate|chocolates|soap|soaps|cosmetic|cosmetics|perfume|perfumes|jewell?ery|ring|rings|bangle|bangles|cufflink|cufflinks|apparel|shirt|shoe|shoes|belt|belts|cake|bakery|pizza|coffee|tea|cereal|gift|gifts|cbd|cannabis|vape|capsule|pill|supplement|book|cigarette|pen|pencil|tie|scarf|sock|hat|cap|box|boxes|pouch|pouches|bag|bags|sleeve|sleeves|label|labels|carton|cartons|tube|tubes|tray|trays|packaging)\b/gi;
         const expandTerm = (w: string): string[] => (w.endsWith('s') ? [w, w.slice(0, -1)] : [w]);
         const prodTerms = [...new Set((custAll.match(PRODUCTISH) ?? []).flatMap((w) => expandTerm(w.toLowerCase())))];
-        const linkQuery = prodTerms.length ? prodTerms.join(' ') : (custMsgs.slice(-4).join(' ') || custAll);
-        const linkKnow = await findRelevantKnowledge(deps, website.id, linkQuery, 4000).catch(() => '');
-        linkUrls = [...new Set([...linkKnow.matchAll(/\((https?:\/\/[^)\s]+)\)/g)].map((m) => m[1]))];
-        alog(`link request: query="${linkQuery.slice(0, 80)}" urls=${linkUrls.slice(0, 5).join(' ')}`);
+        // Generic words ("box", "bag"...) do not identify a product; a link needs a SPECIFIC product.
+        const GENERIC_PROD = new Set(['box', 'boxe', 'boxes', 'packaging', 'package', 'carton', 'cartons', 'pouch', 'pouche', 'pouches', 'bag', 'bags', 'sleeve', 'sleeves', 'label', 'labels', 'tube', 'tubes', 'tray', 'trays', 'mailer', 'mailers']);
+        const specificTerms = prodTerms.filter((t) => !GENERIC_PROD.has(t));
+        const linkQuery = (specificTerms.length ? specificTerms : prodTerms).join(' ') || custMsgs.slice(-4).join(' ') || custAll;
+        if (specificTerms.length) {
+          const linkKnow = await findRelevantKnowledge(deps, website.id, linkQuery, 4000).catch(() => '');
+          linkUrls = [...new Set([...linkKnow.matchAll(/\((https?:\/\/[^)\s]+)\)/g)].map((m) => m[1]))];
+        }
+        alog(`link request: specific=[${specificTerms.join(',')}] query="${linkQuery.slice(0, 80)}" urls=${linkUrls.slice(0, 5).join(' ')}`);
         messages.push({ role: 'user', content: linkUrls.length
           ? `[The customer asked for a link to see the product on our website. Reply in ONE short sentence and paste the SINGLE most relevant of these exact URLs (copy it exactly, no changes): ${linkUrls.slice(0, 5).join(' , ')}. Do NOT send a photo or a mockup. Do NOT invent a URL that is not in this list.]`
-          : `[The customer asked for a product link but we have no matching page handy. Say in one short line that the team will share the exact product link by email, and ask for their email. Do not send a photo or mockup, and do not invent a URL.]` });
+          : `[The customer asked for a link but has NOT clearly said which product they want. Do NOT send any link, photo or mockup, and do NOT guess or name a product they did not mention. Ask in one short friendly line what product they want to pack or see, so you can share the exact page.]` });
       }
       try {
         for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
