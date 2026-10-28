@@ -2105,7 +2105,9 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
         // Generic words ("box", "bag"...) do not identify a product; a link needs a SPECIFIC product.
         const GENERIC_PROD = new Set(['box', 'boxe', 'boxes', 'packaging', 'package', 'carton', 'cartons', 'pouch', 'pouche', 'pouches', 'bag', 'bags', 'sleeve', 'sleeves', 'label', 'labels', 'tube', 'tubes', 'tray', 'trays', 'mailer', 'mailers']);
         const specificTerms = prodTerms.filter((t) => !GENERIC_PROD.has(t));
-        const linkQuery = (specificTerms.length ? specificTerms : prodTerms).join(' ') || custMsgs.slice(-4).join(' ') || custAll;
+        const DESCRIPTOR = /\b(handmade|hand-made|kraft|luxury|premium|matte|glossy|gloss|window|magnetic|drawer|foil|gold|silver|eco|recycled|biodegradable|white|black|clear|transparent|holster|dog|collapsible|cardboard|hexagon|round|heart|pillow|tube|mailer|display|sleeve|tuck|two-piece)\b/gi;
+        const descTerms = [...new Set((custAll.match(DESCRIPTOR) ?? []).map((w) => w.toLowerCase()))];
+        const linkQuery = [...new Set([...(specificTerms.length ? specificTerms : prodTerms), ...descTerms])].join(' ') || custMsgs.slice(-4).join(' ') || custAll;
         if (specificTerms.length) {
           const linkKnow = await findRelevantKnowledge(deps, website.id, linkQuery, 4000).catch(() => '');
           linkUrls = [...new Set([...linkKnow.matchAll(/\((https?:\/\/[^)\s]+)\)/g)].map((m) => m[1]))];

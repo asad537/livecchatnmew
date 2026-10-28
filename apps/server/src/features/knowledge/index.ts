@@ -248,7 +248,11 @@ export async function crawlWebsite(
   const thin = sitemapUrls.filter((u) => !crawled.has(u)).slice(0, URL_INDEX_MAX);
 
   // Replace stored knowledge atomically enough for our purposes.
-  await deps.db.run('DELETE FROM knowledge_pages WHERE website_id = ?', [websiteId]);
+  // Only clear pages of the SAME host, so another site indexed for this website (e.g. a sister site added for link suggestions) survives a re-crawl.
+  await deps.db.run(
+    'DELETE FROM knowledge_pages WHERE website_id = ? AND (url LIKE ? OR url LIKE ?)',
+    [websiteId, '%//' + host + '/%', '%//www.' + host + '/%'],
+  );
   const t = nowIso();
   for (const r of results.slice(0, MAX_PAGES)) {
     await deps.db.run(
