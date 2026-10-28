@@ -2084,7 +2084,7 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
         }
         alog(`link request: specific=[${specificTerms.join(',')}] query="${linkQuery.slice(0, 80)}" urls=${linkUrls.slice(0, 5).join(' ')}`);
         messages.push({ role: 'user', content: linkUrls.length
-          ? `[The customer asked for a link to see the product on our website. Reply in ONE short sentence and paste the SINGLE most relevant of these exact URLs (copy it exactly, no changes): ${linkUrls.slice(0, 5).join(' , ')}. Do NOT send a photo or a mockup. Do NOT invent a URL that is not in this list.]`
+          ? `[The customer asked for a link to see the product on our website. These product-page URLs are listed BEST MATCH FIRST (ranked for what they want to pack): ${linkUrls.slice(0, 5).join(' , ')}. Reply in ONE short sentence and paste the FIRST URL exactly as written — only pick a later one if it is clearly a better match for exactly what they asked. Do NOT send a photo or a mockup, and do NOT invent a URL that is not in this list.]`
           : `[The customer asked for a link but has NOT clearly said which product they want. Do NOT send any link, photo or mockup, and do NOT guess or name a product they did not mention. Ask in one short friendly line what product they want to pack or see, so you can share the exact page.]` });
       }
       try {
