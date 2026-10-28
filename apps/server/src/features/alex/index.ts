@@ -1473,7 +1473,8 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
   }
 
   // ── 2c. plain standard box: prefer a real library photo over an AI render (owner: standard boxes should come from the library).
-  if (!specialShape && !revision && !ref && !sheetMode && expectedText.length === 0 && process.env.ALEX_LIB_FIRST !== '0') {
+  const custMark = /\b(logos?|monograms?|initials?|brand(ed|ing|s)?|my design|our design|our name|company name|print my|printed name)\b/i.test(customerWords) || /\blogo\s+['"]?[A-Za-z0-9]/i.test(customerWords);
+  if (!specialShape && !revision && !ref && !sheetMode && expectedText.length === 0 && !custMark && process.env.ALEX_LIB_FIRST !== '0') {
     try {
       const libQuery = `${desc} ${customerWords}`.replace(/\s+/g, ' ').trim();
       const libRes = await sendPhoto(deps, conversationId, libQuery, wmText);
@@ -1704,10 +1705,15 @@ async function runTool(deps: AppDeps, conversationId: string, call: ToolCall, la
     switch (call.function.name) {
       case 'send_photo': {
         // The customer named their own brand/logo/design: no library photo can show that, so render the picture.
-        const branded = /\b(brand(ed|ing)?|logo|my design|our design|named|called|titled)\b/i.test(lastVisitorText) || /["“][^"”]{2,40}["”]/.test(lastVisitorText);
+        const brandRe = /\b(brand(ed|ing)?|logos?|monograms?|initials?|my design|our design|our brand|print my|named|called|titled)\b/i;
+        const quotedRe = /["“”][^"“”]{1,40}["“”]/;
+        const custLines = convoText.split('\n').filter((l) => l.startsWith('Customer:')).join(' ');
+        const branded = brandRe.test(lastVisitorText) || quotedRe.test(lastVisitorText) || brandRe.test(custLines);
         if (branded) {
           alog(`branded photo request ("${lastVisitorText.slice(0, 60)}"): rendering a picture instead of a library photo`);
-          return await makeMockup(deps, conversationId, String(args.query ?? lastVisitorText), wmText, convoText, true);
+          const logoBit = (custLines.match(/\b(logo|monogram|brand|initials?)\b[^.]{0,40}/i) ?? [])[0] ?? '';
+          const brandedDesc = `${String(args.query ?? lastVisitorText)}${logoBit ? `, printed with ${logoBit}` : ''}`.slice(0, 300);
+          return await makeMockup(deps, conversationId, brandedDesc, wmText, convoText, true);
         }
         const res = await sendPhoto(deps, conversationId, String(args.query ?? ''), wmText);
         // Nothing of that kind in the library: render a mockup right away instead of
@@ -2061,7 +2067,7 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       if (dlMatches && dlMatches.length) facts.push(`deadline: ${dlMatches[dlMatches.length - 1].trim()}`);
       const emailM = custAll.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
       if (emailM) facts.push(`email: ${emailM[0]}`);
-      if (facts.length) messages.push({ role: 'user', content: `[Details the customer already gave in this chat — confirm them and NEVER ask about them again. Do NOT use the words "how many" or "quantity" if a quantity is listed here: ${facts.join('; ')}. Ask only about a detail that is still MISSING, or move to the next step (name + email, or handover).]` });
+      if (facts.length) messages.push({ role: 'user', content: `[Details the customer already gave in this chat — already confirmed, so do NOT ask about them again and do NOT restate this whole spec in every reply (no "Got it, N boxes in WxHxD" recap each time): ${facts.join('; ')}. Do NOT use the words "how many" or "quantity" if a quantity is listed. Just answer the new message or ask the next MISSING detail, or move to name + email / handover.]` });
       // ── Link request: give a real product-page URL, never a photo ──
       const luRaw = (([...convo].reverse().find((m) => m.role === 'user') as { content?: unknown })?.content ?? '') as unknown;
       const luText = typeof luRaw === 'string' ? luRaw : '';
