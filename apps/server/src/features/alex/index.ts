@@ -2100,6 +2100,8 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       // Think (Qwen reasoning) on hard turns: money, complaints, deadlines, long messages.
       const hardTurn = !CONTACT_RE.test(lastUserOnly) && (priceIntent || /\b(complain|refund|wrong|not happy|cancel|deadline|urgent|rush|beat|match|compare|why)\b/i.test(lastUserOnly) || lastUserOnly.split(/\s+/).length > 30);
       if (hardTurn) alog(`hard turn: thinking on${quotesBlock ? ', past quotes attached' : ''}`);
+      const think = process.env.ALEX_THINK === 'all' ? (!SMALLTALK_RE.test(lastUserOnly) && lastUserOnly.trim().length > 2) : hardTurn;
+      if (think && !hardTurn) alog('thinking on (ALEX_THINK=all)');
       const systemText = buildSystem(deps, botSenderFor(conversationId).name, website, visitor ?? null, knowledge, examples, voice, quotesBlock)
         + (romanUrdu ? '\nLANGUAGE: the customer writes Roman Urdu (Urdu in Latin letters). Reply in natural, short Roman Urdu (e.g. "Ji, 100 boxes 8x8x3 inch ke liye quote team bhejegi. Aap ka email?"), keeping product terms in English. Never switch to English while they write Roman Urdu. Quote ke liye hamesha kaho "team aap ko email par exact quote bhejegi"; kabhi na kaho ke quote bhej diya gaya hai.' : '');
       if (romanUrdu) alog('customer writes Roman Urdu');
@@ -2167,7 +2169,7 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       try {
         for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
           const t0 = Date.now();
-          let out = await chat(deps, messages, round < MAX_TOOL_ROUNDS && !ackAfterMockup && !contactTurn && !wantsLink, undefined, undefined, hardTurn && round === 0);
+          let out = await chat(deps, messages, round < MAX_TOOL_ROUNDS && !ackAfterMockup && !contactTurn && !wantsLink, undefined, undefined, think && round === 0);
           if (round === 0 && !ackAfterMockup && !contactTurn && !wantsLink && (!out.tool_calls || out.tool_calls.length === 0)) {
             const lastUserMsg = (([...convo].reverse().find((m) => m.role === 'user') as { content?: unknown })?.content ?? '') as unknown;
             const lu = typeof lastUserMsg === 'string' ? lastUserMsg : '';
