@@ -1827,7 +1827,7 @@ async function chat(
     headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey ?? ''}` },
     body: JSON.stringify({
       model,
-      max_tokens: think ? 1800 : 400,
+      max_tokens: think ? 3200 : 400,
       temperature: 0.4,
       messages,
       ...(useTools ? { tools: TOOLS, tool_choice: forceTool ? { type: 'function', function: { name: forceTool } } : 'auto' } : {}),
