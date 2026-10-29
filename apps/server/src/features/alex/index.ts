@@ -1720,7 +1720,7 @@ async function pushLeadToCrm(deps: AppDeps, conversationId: string, transcript: 
 
 const CONTACT_RE = /[\w.+-]+@[\w-]+\.[\w.-]+|\+?\d[\d\s().-]{8,}\d/;
 // A quantity in the customer's words ("500 boxes", "1,000 pcs", "2k", "quantity 300"), not a size like 10x8x4.
-const QTY_RE = /\b(\d{1,3}(,\d{3})+|\d{2,7})\s*(k\b|pcs|pieces|units|boxes|bags|pouches|labels|qty|quantity|per (month|order))|\b(quantity|qty|order of|need|want)\s*(is|:)?\s*(\d{1,3}(,\d{3})+|\d{2,7})\b(?!\s*[x×*])|\b\d+\s*(k|thousand|hundred)\b/i;
+const QTY_RE = /\b(\d{1,3}(,\d{3})+|\d{1,7})\s*(k\b|pcs|pieces|units|boxes|bags|pouches|labels|qty|quantity|per (month|order))|\b(quantity|qty|order of|need|want)\s*(is|:)?\s*(\d{1,3}(,\d{3})+|\d{1,7})\b(?!\s*[x×*])|\b\d+\s*(k|thousand|hundred)\b/i;
 const HANDOVER_RE = /\b(quote|quotation|estimate|hand(?:ing)? (?:this|it|you) over|our team will|team member will|pass (?:this|it) (?:on|along))\b/i;
 
 async function maybeAutoHandover(deps: AppDeps, conversationId: string, convo: ChatMsg[], reply: string): Promise<void> {
@@ -2239,7 +2239,7 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       alog(`draft: ${(reply ?? '').slice(0, 100)}`);
       const allCustomerText = history.filter((m) => m.sender_type === 'VISITOR' && m.kind === 'TEXT').map((m) => m.body ?? '').join(' ');
       // A customer who answers "300" or "2,000 pcs" on its own has given the quantity even though the joined text has no unit word.
-      const bareQty = history.some((m) => m.sender_type === 'VISITOR' && m.kind === 'TEXT' && /^\s*(\d{1,3}(,\d{3})+|\d{2,7})\s*(k|pcs|pieces|units|boxes)?\s*[.!]?\s*$/i.test(m.body ?? ''));
+      const bareQty = history.some((m) => m.sender_type === 'VISITOR' && m.kind === 'TEXT' && /^\s*(?:one|two|three|four|five|six|seven|eight|nine|ten|\d{1,3}(,\d{3})+|\d{1,7})\s*(k|pcs|pieces|units|boxes|box|jewelry box)?\s*[.!]?\s*$/i.test(m.body ?? ''));
       const qtyKnown = QTY_RE.test(allCustomerText) || bareQty;
       if (reply && contactTurn) {
         // Keep the thank-you + "team will email the quote"; a question only while the quantity is unknown.
@@ -2367,6 +2367,15 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
         let seen = false;
         const kept = parts.filter((p) => { if (!/\?\s*$/.test(p)) return true; if (seen) return false; seen = true; return true; });
         if (kept.length < parts.length) reply = kept.join('').replace(/\b(Also|Additionally|And),?\s*$/i, '').trim();
+      }
+      // Hard guard: the quantity is already known, so never re-ask or ask to "confirm" it (even for qty 1).
+      if (reply && qtyKnown) {
+        const QTY_Q = /\b(how many|how much (?:quantity|do you (?:need|want|require))|what (?:is |are )?(?:the |your )?quantit|confirm (?:the |your )?(?:exact )?quantit|exact quantit|quantit(?:y|ies)(?: you| do you| would you| you'?d| needed| required| for)|number of (?:boxes|units|pieces)|how many (?:boxes|units|pieces))/i;
+        const qp = sentencesOf(reply);
+        const kq = qp.filter((p) => !(/\?\s*$/.test(p.trim()) && QTY_Q.test(p)));
+        const tq = kq.join('').trim();
+        if (kq.length < qp.length && tq.length >= 8) { reply = tq; alog('qty known: stripped a quantity question'); }
+        else if (kq.length < qp.length) { reply = 'Noted on the quantity. May I have your name and email so our team can send the exact quote?'; alog('qty known: replaced a quantity-only reply'); }
       }
       // Agents don't use emojis in replies.
       reply = reply.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{1F900}-\u{1F9FF}]/gu, '').replace(/[ \t]{2,}/g, ' ').replace(/\s+([.!?,])/g, '$1');
