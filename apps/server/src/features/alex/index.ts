@@ -988,7 +988,12 @@ async function makeMockup(deps: AppDeps, conversationId: string, rawPrompt: stri
     fixedSeed = revision.seed;
     alog(`mockup revision: reusing previous prompt + seed ${fixedSeed}`);
   } else if (ref) {
-    prompt = `Studio product photo of the packaging shown in the reference image: keep its box style, shape, proportions, logo and printed design. Apply these changes requested by the customer exactly (colours, material, finish, inserts, text): ${desc}. Seamless light grey studio backdrop, 3/4 angle, soft studio light, photorealistic, no people, no hands.`;
+    const refCtx = convoText.split('\n').slice(-6).join(' ');
+    const refIsLogo = /\b(logo|artwork|brand|monogram|emblem|design file)\b/i.test(refCtx) && !/\b(this (box|packaging|design)|same (box|style)|box like this|replicate|copy this)\b/i.test(refCtx);
+    prompt = refIsLogo
+      ? `Studio product photo of a clean, premium rectangular box for the customer's product (${desc}), with the EXACT logo/artwork from the reference image printed as the brand logo, centered and tastefully sized on the front panel and the lid top. IMPORTANT: the reference image is ONLY the logo to print - do NOT turn the box into the shape of the logo; the box is ordinary rectangular packaging and the logo is simply printed on it. Seamless light grey studio backdrop, 3/4 angle, soft studio light, photorealistic, exactly one box, no people, no hands.`
+      : `Studio product photo of the packaging shown in the reference image: keep its box style, shape, proportions, logo and printed design. Apply these changes requested by the customer exactly (colours, material, finish, inserts, text): ${desc}. Seamless light grey studio backdrop, 3/4 angle, soft studio light, photorealistic, no people, no hands.`;
+    if (refIsLogo) alog('reference is a logo: placing it on a box (not copying the box shape)');
   } else {
     prompt = await enhanceMockupPrompt(deps, desc, convoText, sheetMode);
   }
