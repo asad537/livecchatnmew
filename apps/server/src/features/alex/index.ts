@@ -2126,6 +2126,12 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
         if (qm) lastQty = qm[0].trim();
       }
       if (lastQty) facts.push(`quantity: ${lastQty}`);
+      // Low quantity: accept it, but ONCE gently note that a larger run is far cheaper per box (never a price).
+      const WORDNUM: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, dozen: 12, twenty: 20, thirty: 30, forty: 40, fifty: 50 };
+      const qtyNum = (() => { const t = lastQty.toLowerCase().replace(/,/g, '').trim(); const dm = t.match(/\d+/); if (dm) return parseInt(dm[0], 10); return WORDNUM[t] ?? NaN; })();
+      const lowQty = Number.isFinite(qtyNum) && qtyNum > 0 && qtyNum < 50;
+      const upsellDone = convo.some((m) => m.role === 'assistant' && /\b(per box|per unit|per-unit|larger (run|order|quantity|batch)|more per|cheaper per|unit (price|cost)|bulk|economical|cost-effective|better rate)\b/i.test((m as { content: string | null }).content ?? ''));
+      if (lowQty && !upsellDone) messages.push({ role: 'user', content: `[The customer's quantity (${qtyNum}) is low. ACCEPT it and do NOT re-ask it. In this reply, ONCE and in one friendly sentence, mention that a small run costs much more PER BOX and that a larger run (around 100 or more) is far cheaper per unit, and offer to quote both the small and a larger quantity — NEVER state any actual price, number of dollars, or a per-box figure. Keep it light, not pushy, then continue to the next step.]` });
       const sizeMatches = custAll.match(/\d+(?:\.\d+)?\s*[x×*]\s*\d+(?:\.\d+)?(?:\s*[x×*]\s*\d+(?:\.\d+)?)?\s*(?:mm|cm|inch|inches|in|")?/gi);
       if (sizeMatches && sizeMatches.length) facts.push(`size: ${sizeMatches[sizeMatches.length - 1].trim()}`);
       const dlMatches = custAll.match(/\b\d{1,3}\s*(?:day|days|week|weeks|month|months)\b/gi);
@@ -2381,6 +2387,11 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       reply = reply.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{1F900}-\u{1F9FF}]/gu, '').replace(/[ \t]{2,}/g, ' ').replace(/\s+([.!?,])/g, '$1');
       // Agents write tight messages: no blank lines between sentences/paragraphs.
       reply = reply.replace(/[ \t]+\n/g, '\n').replace(/\n{2,}/g, '\n').trim();
+      // Low quantity: guarantee the one-time 'a larger run is cheaper per box' note (the model often skips it). No price.
+      if (reply && lowQty && !upsellDone && !/\b(per box|per unit|per-unit|larger (run|order|quantity|batch)|cheaper per|more per|in bulk|economical|cost-effective|better rate)\b/i.test(reply)) {
+        reply = `${reply} Quick note: at this quantity the cost per box is much higher \u2014 a larger run (around 100 or more) is far more economical, happy to quote both if you like.`;
+        alog('low qty: appended per-box upsell note');
+      }
 
       const fresh = await deps.db.get<ConvRow>('SELECT id, status FROM conversations WHERE id = ?', [conversationId]);
       if (!fresh || fresh.status !== 'WAITING') return;
