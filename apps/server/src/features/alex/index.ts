@@ -2146,6 +2146,15 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
         && /\b(links?|urls?)\b/i.test(luText)
         && /\b(reference|product|page|website|site|send|share|give|provide|want|need|get|show|example|relevant|closest|closet|idea|catalog|collection|similar|dedo|do|chahiye|bhej)\b/i.test(luText)
         && !/\b(my|here is|here's|this is my)\b[^.]{0,15}\blink\b/i.test(luText);
+      // ── Advice request: the customer wants OUR suggestions (colours/finishes/styles), not a photo or a question back ──
+      const wantsAdvice = !contactTurn && !wantsLink
+        && /\b(suggest|recommend|recommendation|what (?:do|would|can) you (?:suggest|recommend)|which (?:colou?r|finish|style|material|option|one)|what (?:colou?rs?|finishes?|styles?|options?|materials?)|give me (?:some )?(?:suggestions?|options?|ideas?)|any (?:suggestions?|recommendations?|ideas?)|help me (?:choose|decide|pick)|what (?:looks|would look) (?:good|best))\b/i.test(luText)
+        && !/\b(show|see|picture|image|photo|pic|mockup|render|visual)\b/i.test(luText);
+      if (wantsAdvice) {
+        const adviceProd = (custAll.match(/\b(soaps?|candles?|perfumes?|chocolates?|cosmetics?|jewell?ery|rings?|watch(?:es)?|bakery|cakes?|cookies?|coffee|tea|bottles?|apparel|shirts?|shoes?|gifts?|cbd|vapes?|pizza|cereal|labels?|pouches?)\b/i) ?? [])[0] ?? 'product';
+        messages.push({ role: 'user', content: `[The customer is asking for YOUR suggestions/recommendations. Do NOT send a photo and do NOT ask them what they prefer. Give 2-4 concrete options suited to a ${adviceProd} box (colours such as kraft brown, matte white, soft pastels or black; finishes such as gold or silver foil, spot UV, soft-touch matte, or a die-cut window), each with a few words on the look it gives, then ask which direction appeals. Keep it short and friendly. Never state prices.]` });
+        alog('advice request: suggesting options, tools off');
+      }
       let linkUrls: string[] = [];
       if (wantsLink) {
         const PRODUCTISH = /\b(rigid|mailer|mailers|kraft|corrugated|bottle|bottles|beer|wine|whisky|whiskey|watch|watches|candle|candles|chocolate|chocolates|soap|soaps|cosmetic|cosmetics|perfume|perfumes|jewell?ery|ring|rings|bangle|bangles|cufflink|cufflinks|apparel|shirt|shoe|shoes|belt|belts|cake|bakery|pizza|coffee|tea|cereal|gift|gifts|cbd|cannabis|vape|capsule|pill|supplement|book|cigarette|pen|pencil|tie|scarf|sock|hat|cap|box|boxes|pouch|pouches|bag|bags|sleeve|sleeves|label|labels|carton|cartons|tube|tubes|tray|trays|packaging)\b/gi;
@@ -2175,8 +2184,8 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       try {
         for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
           const t0 = Date.now();
-          let out = await chat(deps, messages, round < MAX_TOOL_ROUNDS && !ackAfterMockup && !contactTurn && !wantsLink, undefined, undefined, think && round === 0);
-          if (round === 0 && !ackAfterMockup && !contactTurn && !wantsLink && (!out.tool_calls || out.tool_calls.length === 0)) {
+          let out = await chat(deps, messages, round < MAX_TOOL_ROUNDS && !ackAfterMockup && !contactTurn && !wantsLink && !wantsAdvice, undefined, undefined, think && round === 0);
+          if (round === 0 && !ackAfterMockup && !contactTurn && !wantsLink && !wantsAdvice && (!out.tool_calls || out.tool_calls.length === 0)) {
             const lastUserMsg = (([...convo].reverse().find((m) => m.role === 'user') as { content?: unknown })?.content ?? '') as unknown;
             const lu = typeof lastUserMsg === 'string' ? lastUserMsg : '';
             const prevBotText = ((([...convo].reverse().find((m) => m.role === 'assistant') as { content?: unknown })?.content ?? '') as unknown);
@@ -2355,7 +2364,7 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
         if (short && short !== reply.trim() && !contactTurn) { reply = short; alog('shortened caption'); }
       }
       // Real agents write short messages: compress anything over ~28 words.
-      if (reply.split(/\s+/).length > 22 && !/https?:\/\//i.test(reply)) {
+      if (reply.split(/\s+/).length > 22 && !/https?:\/\//i.test(reply) && !wantsAdvice) {
         try {
           const short = await chat(deps, [
             { role: 'system', content: 'Shorten this live-chat reply to at most 18 words: plain words, keep its meaning and its ONE question if it has one, no new facts, no greetings. Output only the shortened reply.' },
