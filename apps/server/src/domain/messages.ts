@@ -245,9 +245,13 @@ export async function postMessage(deps: AppDeps, input: PostMessageInput): Promi
   if (input.tempId) message.tempId = input.tempId;
 
   // Delivery: is the counterpart currently online?
+  // A visitor's message reaches the business the instant the server stores it — Alex (the bot) always
+  // receives and answers it — so mark it delivered right away (double tick), not only when a human agent
+  // happens to be assigned and online (with a bot there usually is none). Agent->visitor messages still
+  // depend on the visitor being online.
   const counterpartOnline =
     input.senderType === 'VISITOR'
-      ? conv.assigned_user_id !== null && deps.presence.isAgentOnline(conv.assigned_user_id)
+      ? true
       : deps.presence.isVisitorOnline(conv.visitor_id);
 
   if (counterpartOnline) {

@@ -124,6 +124,7 @@ export function App({ server, widgetKey }: { server: string; widgetKey: string }
     avatarUrl?: string | null;
   } | null>(null);
   const [agentTyping, setAgentTyping] = useState(false);
+  const [renderPct, setRenderPct] = useState<number | null>(null);
   const [unread, setUnread] = useState(0);
   const [draft, setDraft] = useState('');
   const [uploading, setUploading] = useState(false);
@@ -297,6 +298,7 @@ export function App({ server, widgetKey }: { server: string; widgetKey: string }
         return [...prev, message];
       });
       setConversation((prev) => prev ?? { id: message.conversationId, status: 'WAITING' });
+      if (message.senderType === 'AGENT' || message.senderType === 'BOT') setRenderPct(null);
       if ((message.senderType === 'AGENT' || message.senderType === 'BOT') && soundOnRef.current) {
         playPing();
       }
@@ -338,11 +340,12 @@ export function App({ server, widgetKey }: { server: string; widgetKey: string }
       },
     );
 
-    socket.on(EV.ChatTyping, ({ from, typing }: { conversationId: string; from: 'VISITOR' | 'AGENT'; typing: boolean }) => {
+    socket.on(EV.ChatTyping, ({ from, typing, percent }: { conversationId: string; from: 'VISITOR' | 'AGENT'; typing: boolean; percent?: number }) => {
       if (from !== 'AGENT') return;
       setAgentTyping(typing);
+      setRenderPct(typeof percent === 'number' ? percent : null);
       if (agentTypingTimer.current) window.clearTimeout(agentTypingTimer.current);
-      if (typing) agentTypingTimer.current = window.setTimeout(() => setAgentTyping(false), 5000);
+      if (typing) agentTypingTimer.current = window.setTimeout(() => { setAgentTyping(false); setRenderPct(null); }, typeof percent === 'number' ? 90000 : 5000);
     });
 
     socket.on(EV.ChatStatus, ({ conversation: conv }: { conversation: ConversationSummary }) => {
@@ -951,7 +954,7 @@ export function App({ server, widgetKey }: { server: string; widgetKey: string }
           <div class="lc-body" ref={bodyRef}>
             {messages.length === 0 && website.greeting && <div class="lc-greet">{website.greeting}</div>}
             {renderMessages(messages, { server, token: visitorToken, fallbackAgent: agent })}
-            {agentTyping && !ended && <TypingRow agent={agent ?? ([...messages].reverse().find((m) => m.senderType === 'BOT' && m.sender)?.sender ?? { name: 'Agent', avatarColor: '#6c5ce7' })} server={server} />}
+            {agentTyping && !ended && <TypingRow agent={agent ?? ([...messages].reverse().find((m) => m.senderType === 'BOT' && m.sender)?.sender ?? { name: 'Agent', avatarColor: '#6c5ce7' })} server={server} percent={renderPct} />}
             {showInfoForm && (
               <InfoForm
                 onSubmit={submitInfo}

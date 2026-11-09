@@ -14,6 +14,15 @@ import type { AppDeps } from '../../core/deps.js';
 import { postMessage, type MessageRow } from '../../domain/messages.js';
 import { findRelevantKnowledge } from '../knowledge/index.js';
 import { alexTurn } from '../alex/index.js';
+import { readFileSync } from 'node:fs';
+let _personaCache: { at: number; text: string } | null = null;
+function loadAlexPersona(): string {
+  if (_personaCache && Date.now() - _personaCache.at < 5 * 60_000) return _personaCache.text;
+  let text = '';
+  for (const f of ['/root/livechat2/alex/persona.md', 'alex/persona.md']) { try { text = readFileSync(f, 'utf8'); if (text) break; } catch { /* next */ } }
+  _personaCache = { at: Date.now(), text };
+  return text;
+}
 
 interface ConvRow {
   id: string;
@@ -214,14 +223,34 @@ async function aiReply(
       `<website_content>\n${knowledge}\n</website_content>`
     : ` Never invent order status, prices, refunds, or policies specific to ${website.name} — for those, say a human agent will confirm shortly.`;
 
+  // Trained voice: the SAME few-shot real-agent chats Alex uses (alex_examples in the DB, available even when the GPU pod is down)
+  // so the fallback replies in the trained agent's short, casual CSR style instead of a generic assistant tone.
+  let agentExamples = '';
+  try {
+    const terms = lastQuestions.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2).slice(0, 20).join(' ');
+    if (terms) {
+      const rows = await deps.db.all<{ dialogue: string }>(
+        `SELECT dialogue FROM alex_examples WHERE MATCH(visitor_text) AGAINST (? IN NATURAL LANGUAGE MODE) ORDER BY MATCH(visitor_text) AGAINST (? IN NATURAL LANGUAGE MODE) DESC LIMIT 3`,
+        [terms, terms],
+      );
+      agentExamples = rows.map((r, i) => `--- Example ${i + 1} ---\n${(r.dialogue || '').slice(0, 1200)}`).join('\n');
+    }
+  } catch { /* alex_examples only exists on the Premium Boxes install */ }
+  const voiceBlock = agentExamples
+    ? `\n\nVOICE: you are a real sales teammate, not a bot. Reply EXACTLY like the agents in these past chats \u2014 very short (one or two plain sentences, at most ~25 words), casual and friendly, with exactly ONE question, no adjectives, no recap of what they said. Match their tone and brevity.\n<agent_examples>\n${agentExamples}\n</agent_examples>`
+    : '';
+
+  const persona = loadAlexPersona();
+  const personaBlock = persona ? `\n\nHOW ALEX TALKS (follow this persona exactly):\n<persona>\n${persona.slice(0, 3500)}\n</persona>` : '';
+
   const system =
-    `You are the customer-support AI assistant for "${website.name}" only. ` +
-    `All human support agents are currently busy; you are keeping the customer company until one joins. ` +
+    `You are Alex, a warm, human-sounding live chat sales & support agent on the ${website.name} team (custom printed packaging). Chat like a real teammate \u2014 friendly, casual, confident. ` +
+    `IDENTITY: you are Alex on the ${website.name} team. NEVER say or imply you are an AI, bot, assistant, automated service OR \u201ca real person\u201d \u2014 do not discuss or describe what you are at all. Never say you are \u201ckeeping them company\u201d and never mention agents being busy or a queue. If asked whether you are a bot or real, do NOT confirm or deny it \u2014 just reply warmly (e.g. \u201cThis is Alex from the team \u2014 how can I help with your packaging today?\u201d) and move straight to helping. ` +
     `Website greeting (tone reference): "${website.greeting}". ` +
     (visitor?.name ? `The customer's name is ${visitor.name}. ` : '') +
     // ── Hard scope: this is NOT a general chatbot ──
     `STRICT SCOPE — you exist ONLY to help with ${website.name}: its products, services, pricing, orders, policies, ` +
-    `and general support for this business. You are NOT a general-purpose assistant. ` +
+    `and general support for this business. You do NOT help with anything outside this business. ` +
     `If the customer asks anything unrelated — writing or explaining or optimizing code, math, homework, general knowledge, ` +
     `coding help, other companies, jokes, or any off-topic chit-chat — do NOT answer the off-topic part. ` +
     `But always stay warm and human: greet back briefly if greeted, be friendly and never robotic. ` +
@@ -239,9 +268,11 @@ async function aiReply(
     `Urdu script → reply in Urdu script; clear Roman Urdu (e.g. "kya aap boxes banate hain") → reply in Roman Urdu; any other language → mirror it. ` +
     `If they return to English, you return to English. Never start a conversation in any language other than English. ` +
     `Keep replies short (1-3 sentences), warm and helpful. ` +
-    `Collect useful details (order number, issue summary, contact info) so the human agent can start faster. ` +
+    `Follow the lead flow: product, then size, quantity, usage, printing/finish, deadline, then ask for their name and email so the team can send the exact quote by email. Never state any price in chat. ` +
     `Do not promise exact wait times.` +
-    knowledgeBlock;
+    personaBlock +
+    knowledgeBlock +
+    voiceBlock;
 
   if (deps.config.aiProvider === 'anthropic') {
     return anthropicReply(deps, system, messages);

@@ -294,17 +294,27 @@ export function renderMessages(
   return out;
 }
 
-export function TypingRow({ agent, server }: { agent: AgentChip | null; server: string }): JSX.Element {
+export function TypingRow({ agent, server, percent }: { agent: AgentChip | null; server: string; percent?: number | null }): JSX.Element {
+  const pc = typeof percent === 'number' && percent > 0 ? Math.min(100, Math.round(percent)) : null;
   return (
     <div class="lc-row lc-row-a">
       <div class="lc-arow">
         <AvatarDot who={agent} server={server} />
         <div class="lc-bubble lc-bubble-a">
-          <span class="lc-dots">
-            <span />
-            <span />
-            <span />
-          </span>
+          {pc !== null ? (
+            <span style={{ display: 'block', minWidth: '150px' }}>
+              <span style={{ fontSize: '12px', opacity: 0.85 }}>Creating your design… {pc}%</span>
+              <span style={{ display: 'block', height: '4px', borderRadius: '3px', background: 'rgba(0,0,0,0.12)', marginTop: '5px', overflow: 'hidden' }}>
+                <span style={{ display: 'block', height: '100%', width: `${pc}%`, background: 'currentColor', opacity: 0.6, transition: 'width 0.4s ease' }} />
+              </span>
+            </span>
+          ) : (
+            <span class="lc-dots">
+              <span />
+              <span />
+              <span />
+            </span>
+          )}
         </div>
       </div>
     </div>
