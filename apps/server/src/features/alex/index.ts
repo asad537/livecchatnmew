@@ -14,7 +14,7 @@ import path from 'node:path';
 import { createGzip, gunzipSync } from 'node:zlib';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
-import { EV, WIDGET_NAMESPACE } from '@livechat/shared';
+import { EV, WIDGET_NAMESPACE, AGENT_NAMESPACE } from '@livechat/shared';
 import type { AppDeps } from '../../core/deps.js';
 import { newId, nowIso } from '../../core/db.js';
 import { postMessage, botSenderFor, type MessageRow } from '../../domain/messages.js';
@@ -2329,6 +2329,27 @@ export function alexTurn(deps: AppDeps, conversationId: string, fallback?: () =>
       );
       if (!conv || conv.status !== 'WAITING') return;
       alog(`turn start conv=${conversationId}`);
+
+      // Alex has the chat open now, so the visitor's messages are read: flip them to
+      // read_at and push the receipt to the widget (blue double-tick) + dashboard.
+      try {
+        const unreadVisitor = await deps.db.all<{ id: string }>(
+          "SELECT id FROM messages WHERE conversation_id = ? AND sender_type = 'VISITOR' AND read_at IS NULL",
+          [conversationId],
+        );
+        if (unreadVisitor.length) {
+          const readAt = nowIso();
+          await deps.db.run(
+            "UPDATE messages SET read_at = ? WHERE conversation_id = ? AND sender_type = 'VISITOR' AND read_at IS NULL",
+            [readAt, conversationId],
+          );
+          const receipt = { conversationId, messageIds: unreadVisitor.map((r) => r.id), readAt };
+          deps.io.of(WIDGET_NAMESPACE).to(room).emit(EV.ChatReceipt, receipt);
+          deps.io.of(AGENT_NAMESPACE).to(room).emit(EV.ChatReceipt, receipt);
+        }
+      } catch (e) {
+        alog(`read-receipt mark failed: ${(e as Error).message}`);
+      }
 
       if (!deps.config.alex.fullAuto && conv.human_online_on_arrival) {
         const prior = await deps.db.get<{ n: number }>(
