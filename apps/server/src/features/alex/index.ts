@@ -2116,20 +2116,39 @@ async function chat(
   forceTool?: string,
   think = false,
 ): Promise<{ content: string | null; tool_calls?: ToolCall[] }> {
-  const { baseUrl, apiKey, model } = endpoint ?? deps.config.alex;
+  const podEp = endpoint ?? deps.config.alex;
+  // Claude fallback fires ONLY for Alex's own endpoint (not an explicit style/voice endpoint) and ONLY when the pod is unreachable.
+  const fbEp = !endpoint ? deps.config.alex.fallback : null;
   type Resp = { choices?: { finish_reason?: string; message?: { content?: string | null; reasoning?: string | null; reasoning_content?: string | null; tool_calls?: ToolCall[] } }[] };
-  const post = async (body: Record<string, unknown>, timeoutMs: number): Promise<Resp> => {
-    const res = await fetch(`${baseUrl}/chat/completions`, {
+  const rawPost = async (ep: { baseUrl: string | null; apiKey: string | null; model: string }, body: Record<string, unknown>, timeoutMs: number, isClaude: boolean): Promise<Resp> => {
+    const res = await fetch(`${ep.baseUrl}/chat/completions`, {
       method: 'POST',
       signal: AbortSignal.timeout(timeoutMs),
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey ?? ''}` },
-      body: JSON.stringify({ model, temperature: 0.4, ...body }),
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${ep.apiKey ?? ''}` },
+      body: JSON.stringify({ model: ep.model, ...(isClaude ? {} : { temperature: 0.4 }), ...body }),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new Error(`alex LLM ${res.status}: ${text.slice(0, 200)}`);
     }
     return (await res.json()) as Resp;
+  };
+  // Strip vLLM-only params and turn Claude's thinking OFF so replies are fast and non-empty (mirrors the pod's enable_thinking:false).
+  const forClaude = (body: Record<string, unknown>): Record<string, unknown> => {
+    const b: Record<string, unknown> = { ...body };
+    delete b.chat_template_kwargs; delete b.continue_final_message; delete b.add_generation_prompt;
+    if (b.tool_choice && typeof b.tool_choice === 'object') b.tool_choice = 'auto'; // Sonnet 5.5 rejects a forced tool_choice
+    b.reasoning_effort = 'none';
+    return b;
+  };
+  const post = async (body: Record<string, unknown>, timeoutMs: number): Promise<Resp> => {
+    try {
+      return await rawPost(podEp, body, timeoutMs, false);
+    } catch (e) {
+      if (!fbEp) throw e;
+      alog(`pod LLM down (${(e as Error).message}) -> Claude fallback ${fbEp.model}`);
+      return await rawPost(fbEp, forClaude(body), Math.max(timeoutMs, 60_000), true);
+    }
   };
   const toolsPart = useTools ? { tools: TOOLS, tool_choice: forceTool ? { type: 'function', function: { name: forceTool } } : 'auto' } : {};
   if (!think) {

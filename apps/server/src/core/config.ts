@@ -21,6 +21,8 @@ export interface Config {
     baseUrl: string | null;
     apiKey: string | null;
     model: string;
+    /** Claude fallback used only when the pod LLM is unreachable (pod stays primary). */
+    fallback: { baseUrl: string; apiKey: string; model: string } | null;
     name: string;
     fullAuto: boolean;
     comfyUrl: string | null;
@@ -107,6 +109,13 @@ export function loadConfig(): Config {
       baseUrl: (env.ALEX_BASE_URL || '').replace(/\/+$/, '') || null,
       apiKey: env.ALEX_API_KEY || null,
       model: env.ALEX_MODEL || 'cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit',
+      fallback: env.ANTHROPIC_API_KEY
+        ? {
+            baseUrl: (env.ALEX_FALLBACK_BASE_URL || 'https://api.anthropic.com/v1').replace(/\/+$/, ''),
+            apiKey: env.ALEX_FALLBACK_API_KEY || env.ANTHROPIC_API_KEY,
+            model: env.ALEX_FALLBACK_MODEL || 'claude-sonnet-5-5',
+          }
+        : null,
       name: env.ALEX_NAME || 'Alex',
       fullAuto: env.ALEX_FULL_AUTO !== 'off',
       comfyUrl: (env.ALEX_COMFY_URL || '').replace(/\/+$/, '') || null,
